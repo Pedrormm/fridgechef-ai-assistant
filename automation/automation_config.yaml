@@ -1,0 +1,24 @@
+automation_enabled: true
+automation_engine: python  # python o uipath
+send_email: false
+email_to: ""
+manual_ingredients: []
+profile:
+  diet: []
+  allergies: []
+  intolerances: []
+  dislikes: []
+  goals: ["comida rápida", "aprovechar sobras"]
+  time_limit_min: 30
+  servings: 2
+  wants_target_recipe: false
+  target_recipe: ""
+  extra_context: "Ejecución automática de prueba."
+image:
+  use_blink: true
+  blink_auth_file: "C:\\FridgeChef\\blink_auth.json"
+  blink_output_file: "C:\\FridgeChef\\photos\\blink_latest.jpg"
+  fallback_image_file: "assets/examples/blink_latest_sample.jpg"
+persistence:
+  save_session: false
+  save_image: false

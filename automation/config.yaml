@@ -1,0 +1,13 @@
+automation_enabled: false
+automation_engine: python
+send_email: false
+email_to: ""
+default_profile:
+  diet: []
+  allergies: []
+  intolerances: []
+  goals: ["comida rápida", "aprovechar sobras"]
+blink:
+  take_photo: true
+  max_photo_age_seconds: 120
+  output_file: photos/blink_latest.jpg

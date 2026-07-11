@@ -1,0 +1,8 @@
+services:
+  fridgechef:
+    build: .
+    env_file: .env
+    ports:
+      - "8501:8080"
+    volumes:
+      - ./photos:/app/photos

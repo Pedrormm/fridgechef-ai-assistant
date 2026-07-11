@@ -1,0 +1,136 @@
+# ============================================================
+# Python cache and compiled files
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# ============================================================
+# Python build artifacts
+# ============================================================
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ============================================================
+# Virtual environments
+# ============================================================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ============================================================
+# Test, coverage and tool caches
+# ============================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# ============================================================
+# Local environment files and secrets
+# ============================================================
+.env
+.env.*
+!.env.example
+
+credentials.json
+service_account.json
+blink_auth.json
+*service-account*.json
+*.secret.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+secrets/
+secrets/*.json
+
+!credentials.json.example
+!blink_auth.json.example
+
+# ============================================================
+# Local photos, generated files and runtime data
+# ============================================================
+photos/
+blink_latest.jpg
+storage_local/
+firestore_export/
+logs/
+outputs/
+reports/
+setup_debug.log
+
+# ============================================================
+# Streamlit local secrets
+# ============================================================
+.streamlit/secrets.toml
+
+# ============================================================
+# Local-only Windows helpers
+# These files are useful for local development, but they are not part
+# of the portable application source code.
+# ============================================================
+windows/
+
+# ============================================================
+# Local notebook / Colab setup helpers
+# ============================================================
+colab/
+.ipynb_checkpoints/
+
+# ============================================================
+# Local debug helpers
+# ============================================================
+streamlit_app/app_debug.py
+scripts/debug_pipeline_once.py
+scripts/*debug*
+scripts/*DEBUG*
+scripts/*.bat
+scripts/*.ps1
+
+# ============================================================
+# Local ADK runtime state
+# ============================================================
+.agents/
+fridgechef_adk/.adk/
+
+# ============================================================
+# IDE and OS files
+# ============================================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================================
+# Assets
+# ============================================================
+assets/
+assets/examples/*.jpg
+assets/examples/*.jpeg
+assets/examples/*.png
+assets/examples/*.webp
+
+
+docs/windows_only_alternative.md
