@@ -158,7 +158,7 @@ def apply_app_style() -> None:
             [data-testid="stSidebar"] {
                 background: linear-gradient(180deg, #f8fafc 0%, #eef8f2 100%);
                 border-right: 1px solid rgba(45, 49, 66, 0.08);
-                z-index: 2147483646 !important;
+                z-index: auto !important;
             }
             section[data-testid="stSidebar"] > div:first-child,
             section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
@@ -338,6 +338,74 @@ def apply_app_style() -> None:
                 div.stButton > button {
                     min-height: 3.1rem;
                 }
+
+                /*
+                   On phones Streamlit renders the sidebar as a slide-over panel.
+                   The main page must stay behind it, otherwise cards and headings
+                   are painted over the preferences panel and taps go to the wrong
+                   element. Keeping this rule mobile-only avoids changing the PC
+                   layout that is already working well.
+                */
+                section[data-testid="stSidebar"] {
+                    z-index: 999999 !important;
+                    background: linear-gradient(180deg, #f8fafc 0%, #eef8f2 100%) !important;
+                    box-shadow: 14px 0 34px rgba(45, 49, 66, 0.22) !important;
+                    border-right: 1px solid rgba(45, 49, 66, 0.16) !important;
+                }
+                section[data-testid="stSidebar"] > div:first-child,
+                section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
+                section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+                    background: linear-gradient(180deg, #f8fafc 0%, #eef8f2 100%) !important;
+                    opacity: 1 !important;
+                }
+                section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+                    padding-left: 1rem !important;
+                    padding-right: 1rem !important;
+                }
+                section[data-testid="stSidebar"] details,
+                section[data-testid="stSidebar"] details > summary,
+                section[data-testid="stSidebar"] [data-testid="stExpander"] {
+                    position: relative !important;
+                    z-index: 1000000 !important;
+                    background: rgba(255, 255, 255, 0.92) !important;
+                }
+                section[data-testid="stSidebar"] input,
+                section[data-testid="stSidebar"] textarea,
+                section[data-testid="stSidebar"] button,
+                section[data-testid="stSidebar"] label {
+                    pointer-events: auto !important;
+                }
+                /*
+                   On mobile there must be one clear sidebar control. Streamlit
+                   exposes different controls depending on whether the sidebar
+                   is open or closed, so we pin every sidebar control to the
+                   same position instead of letting two separate chevrons appear
+                   in different places.
+                */
+                [data-testid="stSidebarCollapsedControl"],
+                [data-testid="collapsedControl"],
+                [data-testid="stSidebarCollapseButton"],
+                section[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] {
+                    position: fixed !important;
+                    top: 0.75rem !important;
+                    left: 0.75rem !important;
+                    z-index: 1000002 !important;
+                    pointer-events: auto !important;
+                    background: rgba(255, 255, 255, 0.86) !important;
+                    border-radius: 0.75rem !important;
+                    box-shadow: 0 6px 18px rgba(45, 49, 66, 0.12) !important;
+                }
+
+                /* The Streamlit three-dot menu is useful on desktop, but on
+                   phones it collides with the sidebar control and hurts the UI. */
+                #MainMenu,
+                [data-testid="stMainMenu"],
+                [data-testid="stToolbar"],
+                [data-testid="stStatusWidget"] {
+                    display: none !important;
+                    visibility: hidden !important;
+                    pointer-events: none !important;
+                }
             }
         </style>
         """,
@@ -511,6 +579,31 @@ def _selector_key(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_").lower() or "item"
 
 
+def _checkbox_key(field_key: str, option: str) -> str:
+    """Build one key format for every option in the custom selector."""
+    return f"{field_key}_{_selector_key(option)}"
+
+
+def _current_selector_values(field_key: str, options: list[str], other_label: str) -> list[str]:
+    """Read the selector from widget state first, then from the saved summary.
+
+    Streamlit updates widget keys before rerunning the script. The previous
+    implementation used only the saved summary key at the top of the function,
+    so the collapsed selector title was always one click behind the checkbox
+    that the user had just changed. Reading the checkbox keys directly keeps the
+    title, the returned profile and the visible selection in sync on the same
+    rerun.
+    """
+    saved_values = list(st.session_state.get(f"selected_{field_key}", []))
+    all_options = [*options, other_label]
+    has_rendered_checkboxes = any(_checkbox_key(field_key, option) in st.session_state for option in all_options)
+
+    if not has_rendered_checkboxes:
+        return [option for option in all_options if option in saved_values]
+
+    return [option for option in all_options if bool(st.session_state.get(_checkbox_key(field_key, option), False))]
+
+
 def optional_multiselect_with_other(
     field_key: str,
     label: str,
@@ -519,26 +612,26 @@ def optional_multiselect_with_other(
     other_label: str,
     other_placeholder: str,
 ) -> tuple[list[str], str | None]:
-    """Render a Spanish multi-selector without the native English menu text.
+    """Render a Spanish multi-selector without stale values or English labels.
 
-    The native multiselect includes an internal English bulk-selection label that
-    cannot be translated reliably from app code. This custom selector keeps the
-    same behavior with explicit checkboxes and a compact popover, while the
-    semantic validation is still handled later by the dedicated preference agent.
+    The selector is intentionally built with checkboxes instead of Streamlit's
+    native multiselect because the native widget exposes an English bulk-action
+    label that the app cannot translate safely. The important part here is that
+    the selected values are read from the checkbox widget state at the start of
+    each rerun, so the compact title and the values used later by the agents are
+    always current.
     """
     state_key = f"selected_{field_key}"
-    current = list(st.session_state.get(state_key, []))
+    current = _current_selector_values(field_key, options, other_label)
     summary = placeholder if not current else ", ".join(current[:2]) + ("..." if len(current) > 2 else "")
 
     # Keep the field name visible even while the compact selector is closed.
-    # The selector behavior remains unchanged; this label only restores the
-    # explanatory context expected in the preferences panel.
     st.markdown(f"**{label}**")
 
-    if hasattr(st, "popover"):
-        container = st.popover(summary, use_container_width=True)
-    else:  # pragma: no cover - compatibility for older Streamlit versions
-        container = st.expander(summary, expanded=False)
+    # Keep the panel open while the user has selected values. That avoids the
+    # frustrating mobile behavior where the selector collapsed after every tap
+    # and forced the user to open it again to choose several options.
+    container = st.expander(summary, expanded=bool(current))
 
     selected: list[str] = []
     with container:
@@ -547,24 +640,32 @@ def optional_multiselect_with_other(
             checked = st.checkbox(
                 option,
                 value=option in current,
-                key=f"{field_key}_{_selector_key(option)}",
+                key=_checkbox_key(field_key, option),
             )
             if checked:
                 selected.append(option)
         other_checked = st.checkbox(
             other_label,
             value=other_label in current,
-            key=f"{field_key}_{_selector_key(other_label)}",
+            key=_checkbox_key(field_key, other_label),
             help="Elige esta opción solo si quieres escribir una preferencia distinta.",
         )
         if other_checked:
             selected.append(other_label)
 
+    # This is the single source consumed by the rest of the app. It is updated
+    # during the same rerun as the checkbox tap, so Analyse and Recipe actions
+    # always receive the options the user can currently see.
     st.session_state[state_key] = selected
+
     custom_value: str | None = None
     if other_label in selected:
+        # This copy is part of the interface, not an agent decision. The wording
+        # for dislikes needs to sound natural because the literal section title
+        # is already a complete sentence fragment.
+        custom_label = "Especifica lo que no te gusta" if field_key == "dislikes" else f"Especifica {label.lower()}"
         custom_value = st.text_input(
-            f"Especifica {label.lower()}",
+            custom_label,
             key=f"custom_{field_key}",
             placeholder=other_placeholder,
             help="Escribe una opción clara y relacionada con alimentación o recetas.",
@@ -602,7 +703,7 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
             update_choice = st.radio(
                 "Al añadir alimentos ahora",
                 options=["replace", "add"],
-                index=0,
+                index=1,
                 format_func=lambda value: "Sustituir por lo que analice ahora" if value == "replace" else "Añadir sin borrar lo anterior",
                 help=(
                     "Usa 'Sustituir' si el texto o la foto representan toda la nevera. "
@@ -616,7 +717,7 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
         diet, custom_diet = optional_multiselect_with_other(
             "diet",
             "Dieta",
-            ["Vegetariana", "Vegana", "Sin lactosa", "Sin gluten", "Halal", "Alta en proteína", "Mediterránea"],
+            ["Vegetariana", "Vegana", "Halal", "Alta en proteína", "Mediterránea"],
             "No sigo una dieta concreta (opcional)",
             "Otra",
             "Ejemplo: baja en sal, sin carne roja...",
@@ -894,6 +995,7 @@ def analyze_current_inputs(
     update_mode: UpdateMode,
     confirm_replace: bool,
     use_prepared_image: bool = True,
+    no_food_message: str | None = None,
 ) -> ActionResult:
     """Analyze manual text and the current image, then update inventory when enabled."""
     validate_profile_preferences(profile)
@@ -919,7 +1021,10 @@ def analyze_current_inputs(
         manual_items=parse_result.accepted_items,
     )
     if not incoming_items and (not remember_fridge or not get_inventory()):
-        raise UserFacingError("Necesito al menos un alimento claro para actualizar la nevera o generar recetas.")
+        raise UserFacingError(
+            no_food_message
+            or "No he encontrado alimentos nuevos que analizar. Escribe algún alimento claro o sube una foto para actualizar la nevera."
+        )
 
     update_result = None
     if remember_fridge and incoming_items:
@@ -963,7 +1068,17 @@ def generate_recipes_from_current_inventory(
 
 
 def run_action_with_status(label: str, steps: list[str], action: Callable) -> object | None:
-    """Run a UI action with visible, human-friendly progress messages."""
+    """Run an action with progress and show validation messages outside it.
+
+    Validation problems should not be hidden inside the status box. The status
+    tells the user that the process stopped, while the actual instruction is
+    rendered below the box as a normal warning/error that is easier to notice on
+    desktop and mobile.
+    """
+    user_message = ""
+    message_kind = "warning"
+    preference_issues: list[str] = []
+
     with st.status(label, expanded=True) as status:
         try:
             for step in steps[:-1]:
@@ -973,18 +1088,30 @@ def run_action_with_status(label: str, steps: list[str], action: Callable) -> ob
             status.update(label="Listo", state="complete", expanded=False)
             return result
         except UserFacingError as exc:
-            status.update(label="Necesito revisar algo antes de continuar", state="error", expanded=True)
-            st.warning(str(exc))
+            status.update(label="No se ha completado la acción", state="error", expanded=False)
+            user_message = str(exc)
+            message_kind = "warning"
         except ImageValidationError as exc:
-            status.update(label="No he podido leer la imagen", state="error", expanded=True)
-            st.error(str(exc))
+            status.update(label="No he podido leer la imagen", state="error", expanded=False)
+            user_message = str(exc)
+            message_kind = "error"
         except PreferenceValidationError as exc:
-            status.update(label="Revisa tus preferencias", state="error", expanded=True)
-            for issue in exc.issues:
-                st.warning(issue.message)
+            status.update(label="Revisa tus preferencias", state="error", expanded=False)
+            preference_issues = [issue.message for issue in exc.issues]
+            message_kind = "warning"
         except Exception:
-            status.update(label="No he podido terminar la operación", state="error", expanded=True)
-            st.error("Ha ocurrido un problema inesperado. Revisa la entrada y vuelve a intentarlo en unos segundos.")
+            status.update(label="No he podido terminar la operación", state="error", expanded=False)
+            user_message = "Ha ocurrido un problema inesperado. Revisa la entrada y vuelve a intentarlo en unos segundos."
+            message_kind = "error"
+
+    if preference_issues:
+        for issue in preference_issues:
+            st.warning(issue)
+    elif user_message:
+        if message_kind == "error":
+            st.error(user_message)
+        else:
+            st.warning(user_message)
     return None
 
 
@@ -1111,47 +1238,74 @@ if st.session_state.get("inventory_clear_message"):
     st.markdown(f"<div class='danger-soft'>{st.session_state['inventory_clear_message']}</div>", unsafe_allow_html=True)
     st.session_state["inventory_clear_message"] = ""
 
+has_available_input = bool(manual_text.strip() or use_prepared_image or (remember_fridge and get_inventory()))
+
 if analyze_clicked:
-    result = run_action_with_status(
-        "Analizando tu nevera",
-        [
-            "Entendiendo el texto que has escrito, si lo hay.",
-            "Revisando la foto si hay una imagen preparada.",
-            "Separando alimentos reales de texto que no corresponde a la nevera.",
-            "Inventario actualizado.",
-        ],
-        lambda status: analyze_current_inputs(manual_text, profile, remember_fridge, update_mode, confirm_replace, use_prepared_image),
-    )
-    if result:
-        _, update_result, parse_result = result
-        show_manual_feedback(parse_result)
-        if update_result:
-            show_inventory_update(update_result)
-            show_inventory(update_result.inventory, title="Alimentos detectados")
+    if not has_available_input:
+        st.warning("No he encontrado alimentos que analizar. Escribe al menos un alimento o sube una foto para empezar.")
+    else:
+        result = run_action_with_status(
+            "Analizando tu nevera",
+            [
+                "Entendiendo el texto que has escrito, si lo hay.",
+                "Revisando la foto si hay una imagen preparada.",
+                "Separando alimentos reales de texto que no corresponde a la nevera.",
+                "Revisión terminada.",
+            ],
+            lambda status: analyze_current_inputs(
+                manual_text,
+                profile,
+                remember_fridge,
+                update_mode,
+                confirm_replace,
+                use_prepared_image,
+                "No he encontrado alimentos que analizar. Escribe al menos un alimento claro o sube una foto para empezar.",
+            ),
+        )
+        if result:
+            _, update_result, parse_result = result
+            show_manual_feedback(parse_result)
+            if update_result:
+                show_inventory_update(update_result)
+                show_inventory(update_result.inventory, title="Alimentos detectados")
+            elif remember_fridge and get_inventory():
+                st.info("No se han introducido alimentos nuevos. Mantengo la nevera guardada tal como estaba.")
+                show_inventory(get_inventory(), title="Alimentos guardados actualmente")
 
 if recipes_clicked:
-    def _generate(status):
-        analysis, update_result, parse_result = analyze_current_inputs(manual_text, profile, remember_fridge, update_mode, confirm_replace, use_prepared_image)
-        status.write("Preparando recetas con los alimentos disponibles.")
-        inventory = get_inventory() if remember_fridge else (update_result.inventory if update_result else [])
-        validated_profile = validate_profile_preferences(profile)
-        response = generate_recipes_from_current_inventory(validated_profile, inventory, use_saved_inventory=remember_fridge)
-        st.session_state["last_recipes"] = response.model_dump()
-        return parse_result, update_result, response
+    if not has_available_input:
+        st.warning("No es posible generar recetas si no se ha introducido ningún alimento. Escribe ingredientes o sube una foto y vuelve a intentarlo.")
+    else:
+        def _generate(status):
+            analysis, update_result, parse_result = analyze_current_inputs(
+                manual_text,
+                profile,
+                remember_fridge,
+                update_mode,
+                confirm_replace,
+                use_prepared_image,
+                "No es posible generar recetas si no se ha introducido ningún alimento. Escribe ingredientes o sube una foto y vuelve a intentarlo.",
+            )
+            status.write("Preparando recetas con los alimentos disponibles.")
+            inventory = get_inventory() if remember_fridge else (update_result.inventory if update_result else [])
+            validated_profile = validate_profile_preferences(profile)
+            response = generate_recipes_from_current_inventory(validated_profile, inventory, use_saved_inventory=remember_fridge)
+            st.session_state["last_recipes"] = response.model_dump()
+            return parse_result, update_result, response
 
-    result = run_action_with_status(
-        "Generando recetas",
-        [
-            "Revisando alimentos escritos o fotografiados.",
-            "Actualizando la nevera si has elegido recordarla.",
-            "Comprobando si hay alimentos suficientes para cocinar.",
-            "Recetas preparadas.",
-        ],
-        _generate,
-    )
-    if result:
-        parse_result, update_result, response = result
-        show_manual_feedback(parse_result)
-        if update_result and remember_fridge:
-            show_inventory_update(update_result)
-        show_recipes(response, profile)
+        result = run_action_with_status(
+            "Generando recetas",
+            [
+                "Revisando alimentos escritos o fotografiados.",
+                "Actualizando la nevera si has elegido recordarla.",
+                "Comprobando si hay alimentos suficientes para cocinar.",
+                "Recetas preparadas.",
+            ],
+            _generate,
+        )
+        if result:
+            parse_result, update_result, response = result
+            show_manual_feedback(parse_result)
+            if update_result and remember_fridge:
+                show_inventory_update(update_result)
+            show_recipes(response, profile)
