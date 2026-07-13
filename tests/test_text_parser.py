@@ -51,7 +51,12 @@ def test_split_user_text_preserves_reviewable_fragments():
     assert split_user_text(text) == ["5 pimientos", "200 gramos de pollo", "Anchoas en vinagre"]
 
 
-def test_manual_parser_does_not_classify_food_locally_without_agent():
+def test_manual_parser_does_not_classify_food_locally_without_agent(monkeypatch):
+    def unavailable_agent(text, fragments):
+        raise RuntimeError("Semantic agent unavailable during this deterministic test.")
+
+    monkeypatch.setattr("src.fridgechef.text_parser._agentic_extraction", unavailable_agent)
+
     result = parse_manual_ingredients("5 pimientos, tomates cherry")
     assert not result.accepted
     assert result.ignored

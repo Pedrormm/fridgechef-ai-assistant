@@ -22,7 +22,13 @@ from src.fridgechef.inventory import (
     needs_replace_confirmation,
 )
 from src.fridgechef.models import FridgeAnalysis, InventoryItem, InventoryUpdateResult, RecipeResponse, UserProfile
-from src.fridgechef.persistence import save_session_if_allowed
+from src.fridgechef.persistence import (
+    InventoryPersistenceResult,
+    clear_inventory_state,
+    load_inventory_state,
+    save_inventory_state,
+    save_session_if_allowed,
+)
 from src.fridgechef.preferences import PreferenceValidationError, validate_profile_preferences
 from src.fridgechef.recipe_planner import clean_user_text, generate_recipes, sentence_case
 from src.fridgechef.security import ImageValidationError, validate_image_upload
@@ -61,8 +67,16 @@ class UserFacingError(Exception):
     """Expected validation error that can be shown without technical details."""
 
 
+def _store_persistence_result(result: InventoryPersistenceResult) -> None:
+    """Keep the last database result available for a clear UI status."""
+    st.session_state["inventory_persistence_backend"] = result.backend
+    st.session_state["inventory_persistence_ok"] = result.success
+    st.session_state["inventory_persistence_warning"] = result.warning or ""
+
+
 def init_state() -> None:
-    """Create session state keys used to keep the UI stable across reruns."""
+    """Create session state and restore the fridge from the database on refresh."""
+    is_new_browser_session = "fridge_inventory" not in st.session_state
     defaults = {
         "current_image_bytes": None,
         "current_image_mime_type": "image/jpeg",
@@ -73,9 +87,17 @@ def init_state() -> None:
         "last_update": None,
         "last_recipes": None,
         "inventory_clear_message": "",
+        "inventory_persistence_backend": "",
+        "inventory_persistence_ok": True,
+        "inventory_persistence_warning": "",
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
+
+    if is_new_browser_session and settings.allow_chat_persistence:
+        result = load_inventory_state()
+        st.session_state["fridge_inventory"] = result.inventory
+        _store_persistence_result(result)
 
 
 def apply_app_style() -> None:
@@ -333,9 +355,12 @@ def get_inventory() -> list[InventoryItem]:
     return inventory
 
 
-def set_inventory(items: list[InventoryItem]) -> None:
-    """Persist inventory in session state using JSON-friendly dictionaries."""
-    st.session_state["fridge_inventory"] = [item.model_dump() for item in items]
+def set_inventory(items: list[InventoryItem], persist: bool = False) -> None:
+    """Update session state and, when requested, the durable database record."""
+    raw_inventory = [item.model_dump() for item in items]
+    st.session_state["fridge_inventory"] = raw_inventory
+    if persist and settings.allow_chat_persistence:
+        _store_persistence_result(save_inventory_state(raw_inventory))
 
 
 def clear_inventory(remember_fridge: bool) -> str:
@@ -349,6 +374,8 @@ def clear_inventory(remember_fridge: bool) -> str:
     had_saved_items = bool(get_inventory())
 
     set_inventory([])
+    if remember_fridge and settings.allow_chat_persistence:
+        _store_persistence_result(clear_inventory_state())
     st.session_state["last_update"] = None
     st.session_state["last_analysis"] = None
     st.session_state["last_recipes"] = None
@@ -555,6 +582,20 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
             value=True,
             help="Guarda la lista de alimentos que vayas analizando para poder consultarla y generar recetas más adelante.",
         )
+
+        if remember_fridge:
+            backend = st.session_state.get("inventory_persistence_backend", "")
+            persistence_ok = bool(st.session_state.get("inventory_persistence_ok", True))
+            if not settings.allow_chat_persistence:
+                st.warning("El guardado permanente está desactivado en la configuración.")
+            elif not persistence_ok:
+                st.warning("No he podido conectar con ninguna base de datos. Revisa los permisos o la carpeta del proyecto.")
+            elif "firestore" in backend and "sqlite" in backend:
+                st.caption("Guardado permanente activo en Firestore y en la base de datos local.")
+            elif "firestore" in backend:
+                st.caption("Guardado permanente activo en Firestore.")
+            else:
+                st.caption("Guardado permanente activo en la base de datos local. No necesitas gcloud para usarlo.")
 
         update_mode: UpdateMode = "replace"
         if remember_fridge:
@@ -889,7 +930,7 @@ def analyze_current_inputs(
                 "Si es una foto parcial, elige 'Añadir sin borrar lo anterior'. Si realmente quieres sustituirlo todo, marca la confirmación."
             )
         update_result = apply_inventory_update(existing_inventory, incoming_items, update_mode)
-        set_inventory(update_result.inventory)
+        set_inventory(update_result.inventory, persist=remember_fridge)
         session_id = save_session_if_allowed(
             {
                 "event": "inventory_update",
@@ -952,6 +993,8 @@ apply_app_style()
 profile, remember_fridge, update_mode = build_profile()
 show_hero()
 show_fridge_question_box(remember_fridge)
+if remember_fridge:
+    show_inventory(get_inventory(), title="Alimentos guardados")
 
 st.header("1. Entrada")
 if remember_fridge:

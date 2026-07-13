@@ -134,3 +134,12 @@ assets/examples/*.webp
 
 
 docs/windows_only_alternative.md
+data/fridgechef.db
+data/
+# Local persistence database
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
