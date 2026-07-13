@@ -51,6 +51,8 @@ class UserProfile(BaseModel):
     goals: List[str] = Field(default_factory=list)
     time_limit_min: int = 30
     servings: int = 2
+    recipe_count: int = 2
+    custom_preferences: Dict[str, str] = Field(default_factory=dict)
     wants_target_recipe: bool = False
     target_recipe: str = ""
     extra_context: str = ""
@@ -63,6 +65,12 @@ class RecipeItem(BaseModel):
     description: str
     why_this_recipe: str
     time_min: int
+    prep_time_min: Optional[int] = None
+    cook_time_min: Optional[int] = None
+    servings: Optional[int] = None
+    category: str = ""
+    cuisine: str = ""
+    calories_per_serving: Optional[int] = None
     ingredients_used: List[str]
     missing_required_for_target: List[str] = Field(default_factory=list)
     missing_optional: List[str] = Field(default_factory=list)
@@ -85,6 +93,94 @@ class RecipeResponse(BaseModel):
     can_generate_recipes: bool = True
     no_recipe_reason: str = ""
     recognized_ingredients: List[str] = Field(default_factory=list)
+
+
+class InventoryItem(BaseModel):
+    """Normalized fridge inventory item shown in the UI and optionally persisted."""
+
+    name: str
+    normalized_name: str
+    quantity: int = 1
+    quantity_label: str = "Cantidad no indicada"
+    state: str = "unknown"
+    expiry_text: Optional[str] = None
+    confidence: float = 0.0
+    sources: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+    @field_validator("quantity")
+    @classmethod
+    def keep_positive_quantity(cls, value: int) -> int:
+        """Avoid displaying zero or negative quantities after merges."""
+        return max(1, int(value or 1))
+
+    @field_validator("confidence")
+    @classmethod
+    def keep_confidence_range(cls, value: float) -> float:
+        """Keep confidence values display-safe and comparable."""
+        return max(0.0, min(1.0, float(value or 0.0)))
+
+
+class InventoryUpdateResult(BaseModel):
+    """Result of applying new observations to the current fridge inventory."""
+
+    inventory: List[InventoryItem] = Field(default_factory=list)
+    added: List[str] = Field(default_factory=list)
+    updated: List[str] = Field(default_factory=list)
+    removed: List[str] = Field(default_factory=list)
+    ignored: List[str] = Field(default_factory=list)
+    mode: str = "replace"
+
+
+class IngredientMention(BaseModel):
+    """Food ingredient extracted by the text-understanding agent."""
+
+    name: str
+    quantity_label: str = "Cantidad no indicada"
+    source_text: str = ""
+    confidence: float = 0.0
+    notes: List[str] = Field(default_factory=list)
+
+    @field_validator("confidence")
+    @classmethod
+    def keep_confidence_range(cls, value: float) -> float:
+        """Keep confidence values display-safe and comparable."""
+        return max(0.0, min(1.0, float(value or 0.0)))
+
+
+class IgnoredTextFragment(BaseModel):
+    """Text fragment rejected by the text-understanding agent."""
+
+    text: str
+    reason: str = "No parece un alimento de la nevera."
+
+
+class ManualIngredientExtraction(BaseModel):
+    """Structured output returned by the manual-input extraction agent."""
+
+    accepted: List[IngredientMention] = Field(default_factory=list)
+    ignored: List[IgnoredTextFragment] = Field(default_factory=list)
+    reasoning_summary: str = ""
+    agent_notes: List[str] = Field(default_factory=list)
+
+
+class RecipeReadinessAssessment(BaseModel):
+    """Structured decision returned by the recipe-readiness agent."""
+
+    can_generate: bool = False
+    usable_ingredients: List[str] = Field(default_factory=list)
+    recognized_items: List[str] = Field(default_factory=list)
+    no_recipe_reason: str = ""
+    ignored_items: List[IgnoredTextFragment] = Field(default_factory=list)
+    reasoning_summary: str = ""
+
+
+class FridgeQuestionDecision(BaseModel):
+    """Structured decision returned by the fridge-question routing agent."""
+
+    is_fridge_related: bool = False
+    answer: str = ""
+    friendly_redirect: str = ""
 
 
 class PipelineResult(BaseModel):

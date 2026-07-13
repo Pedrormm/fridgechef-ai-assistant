@@ -7,20 +7,20 @@ from src.fridgechef.json_utils import extract_json_object
 from src.fridgechef.llm_client import get_client
 from src.fridgechef.models import FridgeAnalysis
 from src.fridgechef.security import validate_image_upload
+from src.fridgechef.spanish_guard import ensure_fridge_analysis_spanish
 
 VISION_PROMPT = """
-You are the vision component of FridgeChef AI.
-Analyze a fridge, shelf or food photo and return only valid JSON.
+Eres el agente visual de FridgeChef AI Assistant.
+Analiza una imagen de nevera, despensa, alimento o producto y devuelve solo JSON válido.
 
-Detection rules:
-- Detect only food items that are clearly visible.
-- Do not invent ingredients.
-- If the image mainly contains water bottles, bottles, packaging or unidentified liquids, report them exactly as such.
-- If something is unclear, place it in uncertain_items instead of guessing.
-- If an item may be spoiled, mark it as possible_spoiled and explain the visual evidence.
-- Never confirm food safety from an image alone.
-- Use short, friendly Spanish names for detected items when possible.
-- Leave barcode_observations empty when no readable label, date or barcode is visible.
+Reglas de detección:
+- Detecta únicamente elementos visibles y razonablemente claros.
+- No inventes alimentos, cantidades, fechas ni marcas.
+- Si algo no está claro, colócalo en uncertain_items en lugar de adivinar.
+- Si un elemento parece estar en mal estado, marca el estado adecuado y explica la evidencia visual.
+- Nunca confirmes seguridad alimentaria solo a partir de una imagen.
+- Todos los textos visibles del JSON deben estar en español de España.
+- Deja barcode_observations vacío si no se ve ninguna etiqueta, fecha o código legible.
 
 Required JSON shape:
 {
@@ -54,4 +54,5 @@ def analyze_image_bytes(image_bytes: bytes, mime_type: str) -> FridgeAnalysis:
     )
 
     data = extract_json_object(response.text)
-    return FridgeAnalysis.model_validate(data)
+    analysis = FridgeAnalysis.model_validate(data)
+    return ensure_fridge_analysis_spanish(analysis)

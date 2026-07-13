@@ -1,54 +1,40 @@
 from __future__ import annotations
 
+import json
 import unicodedata
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
-from src.fridgechef.models import FridgeAnalysis, RecipeItem, RecipeResponse
+try:
+    from google.genai import types
+except Exception:  # pragma: no cover - allows local tests without google-genai installed
+    types = None
+
+from src.fridgechef.config import get_settings
+from src.fridgechef.json_utils import extract_json_object
+from src.fridgechef.llm_client import get_client
+from src.fridgechef.models import FridgeAnalysis, IgnoredTextFragment, RecipeItem, RecipeReadinessAssessment, RecipeResponse
+from src.fridgechef.spanish_guard import ensure_readiness_spanish
 
 
 @dataclass(frozen=True)
 class IngredientReadiness:
-    """Small deterministic decision used before asking the model for recipes."""
+    """Decision used before asking the recipe model for suggestions."""
 
     can_generate: bool
     usable_ingredients: list[str]
     recognized_items: list[str]
     reason: str
+    ignored_items: list[IgnoredTextFragment] | None = None
+    used_agent: bool = False
 
 
-NON_RECIPE_ITEMS = {
-    "agua",
-    "water",
-    "botella",
-    "botellas",
-    "bottle",
-    "bottles",
-    "envase",
-    "envases",
-    "container",
-    "containers",
-    "liquido",
-    "liquidos",
-    "liquid",
-    "liquids",
-    "liquido sin identificar",
-    "liquidos sin identificar",
-    "unidentified liquid",
-    "unidentified liquids",
-    "drink",
-    "drinks",
-    "bebida",
-    "bebidas",
-    "hielo",
-    "ice",
-    "empty bottle",
-    "empty bottles",
-    "botella vacia",
-    "botellas vacias",
-}
+ReadinessAgent = Callable[[list[str], FridgeAnalysis | None], RecipeReadinessAssessment]
 
-SPOILED_STATES = {"possible_spoiled", "spoiled"}
+
+def _is_risky_state(state: str) -> bool:
+    """Return whether an internal freshness state should block cooking."""
+    return state == "possible_spoiled" or state == "spoiled"
 
 
 def normalize_text(value: str) -> str:
@@ -71,29 +57,6 @@ def unique_clean(items: Iterable[str]) -> list[str]:
     return result
 
 
-def is_non_recipe_item(name: str) -> bool:
-    """Identify items that should be shown to the user but not used as recipe bases."""
-    key = normalize_text(name)
-    if not key:
-        return True
-    if key in NON_RECIPE_ITEMS:
-        return True
-
-    non_recipe_markers = {
-        "agua",
-        "water",
-        "botella",
-        "bottle",
-        "envase",
-        "container",
-        "unidentified",
-        "sin identificar",
-        "empty bottle",
-        "botella vacia",
-    }
-    return any(marker in key for marker in non_recipe_markers)
-
-
 def recognized_items(manual_ingredients: list[str], analysis: FridgeAnalysis | None) -> list[str]:
     """Collect everything that can be displayed as recognized input."""
     items: list[str] = []
@@ -109,55 +72,161 @@ def recognized_items(manual_ingredients: list[str], analysis: FridgeAnalysis | N
     return unique_clean(items)
 
 
-def usable_recipe_ingredients(manual_ingredients: list[str], analysis: FridgeAnalysis | None) -> list[str]:
-    """Collect ingredients that are safe enough to be offered to the recipe model."""
-    usable: list[str] = []
-    usable.extend(item for item in manual_ingredients if not is_non_recipe_item(item))
-
-    if analysis:
-        spoiled = {normalize_text(item.name) for item in analysis.possible_spoiled_items}
-        for ingredient in analysis.visible_ingredients:
-            name = ingredient.name
-            if not name or is_non_recipe_item(name):
-                continue
-            if normalize_text(name) in spoiled or ingredient.state in SPOILED_STATES:
-                continue
-            usable.append(name)
-
-    return unique_clean(usable)
+def _spoiled_item_names(analysis: FridgeAnalysis | None) -> set[str]:
+    """Return image items that should never be used directly for recipes."""
+    if not analysis:
+        return set()
+    values = {normalize_text(item.name) for item in analysis.possible_spoiled_items if item.name}
+    values.update(
+        normalize_text(item.name)
+        for item in analysis.visible_ingredients
+        if item.name and _is_risky_state(item.state)
+    )
+    return values
 
 
-def assess_recipe_readiness(manual_ingredients: list[str], analysis: FridgeAnalysis | None) -> IngredientReadiness:
+def _fallback_readiness(manual_ingredients: list[str], analysis: FridgeAnalysis | None) -> RecipeReadinessAssessment:
+    """Conservative local fallback when the recipe-readiness agent is unavailable.
+
+    Manual ingredients have already passed through the text-understanding agent or
+    its conservative repair path, so they are safe enough to use as recipe input.
+    Image-only input is more ambiguous; without the readiness agent, the safest
+    behavior is to show what was recognized but not generate recipes from
+    uncertain products.
+    """
+    recognized = recognized_items(manual_ingredients, analysis)
+    spoiled = _spoiled_item_names(analysis)
+    usable = unique_clean(
+        item for item in manual_ingredients if item and normalize_text(item) not in spoiled
+    )
+
+    return RecipeReadinessAssessment(
+        can_generate=bool(usable),
+        usable_ingredients=usable,
+        recognized_items=recognized,
+        no_recipe_reason=(
+            "He reconocido elementos en la imagen, pero necesito confirmar alimentos concretos antes de generar recetas. "
+            "Puedes escribir los ingredientes visibles o volver a intentarlo con una foto más clara."
+            if recognized and not usable
+            else "No he podido confirmar alimentos suficientes para cocinar sin inventar ingredientes."
+        ),
+        reasoning_summary="Decisión local conservadora usada porque el agente de disponibilidad no estaba disponible.",
+    )
+
+
+def _run_recipe_readiness_agent(manual_ingredients: list[str], analysis: FridgeAnalysis | None) -> RecipeReadinessAssessment:
+    """Use Gemini as a dedicated sub-agent to decide whether recipes are possible.
+
+    This replaces local word lists with a language-understanding decision. The
+    agent sees recognized items and image metadata, then decides if the available
+    items are usable food ingredients, uncertain products, non-cooking items or
+    risky food.
+    """
+    client = get_client()
+    settings = get_settings()
+    recognized = recognized_items(manual_ingredients, analysis)
+    spoiled = list(_spoiled_item_names(analysis))
+
+    prompt = f"""
+You are the recipe-readiness sub-agent for FridgeChef AI Assistant.
+
+Goal:
+Decide whether the recognized fridge input contains enough usable food to generate recipes.
+
+Rules:
+- Use semantic understanding, not a static word list.
+- Do not invent ingredients.
+- Recognized elements that are not enough for cooking can be shown to the user, but they must not be used for recipes.
+- Risky or possibly spoiled items must not be used for recipes.
+- If there are usable ingredients, return only those ingredients in usable_ingredients.
+- If there are no usable ingredients, explain kindly in Spanish.
+- Every visible text value must be Spanish from Spain.
+- Return valid JSON only.
+
+Manual ingredients already extracted by the text agent:
+{json.dumps(manual_ingredients, ensure_ascii=False, indent=2)}
+
+Image analysis:
+{analysis.model_dump_json(indent=2) if analysis else "{}"}
+
+Recognized items shown to the user:
+{json.dumps(recognized, ensure_ascii=False, indent=2)}
+
+Items marked as spoiled or risky:
+{json.dumps(spoiled, ensure_ascii=False, indent=2)}
+
+Required JSON shape:
+{{
+  "can_generate": true,
+  "usable_ingredients": ["ingredient names safe enough to cook with"],
+  "recognized_items": ["all recognized items worth showing to the user"],
+  "no_recipe_reason": "friendly Spanish explanation if can_generate is false",
+  "ignored_items": [{{"text": "recognized but unusable item", "reason": "friendly Spanish reason"}}],
+  "reasoning_summary": "short Spanish explanation"
+}}
+"""
+    response = client.models.generate_content(
+        model=settings.model_name,
+        contents=prompt,
+        config=types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json"),
+    )
+    data = extract_json_object(response.text)
+    assessment = RecipeReadinessAssessment.model_validate(data)
+    return ensure_readiness_spanish(assessment)
+
+
+def assess_recipe_readiness(
+    manual_ingredients: list[str],
+    analysis: FridgeAnalysis | None,
+    readiness_agent: ReadinessAgent | None = None,
+) -> IngredientReadiness:
     """Decide whether there is enough reliable input to request recipes."""
     recognized = recognized_items(manual_ingredients, analysis)
-    usable = usable_recipe_ingredients(manual_ingredients, analysis)
-
     if not recognized:
         return IngredientReadiness(
             can_generate=False,
             usable_ingredients=[],
             recognized_items=[],
             reason="No he encontrado ingredientes claros todavía. Escribe alguno o sube una foto más cercana y con buena luz.",
+            ignored_items=[],
+            used_agent=False,
         )
 
-    if not usable:
-        visible = ", ".join(recognized)
+    try:
+        assessment = readiness_agent(manual_ingredients, analysis) if readiness_agent else _run_recipe_readiness_agent(manual_ingredients, analysis)
+        assessment = ensure_readiness_spanish(assessment)
+        used_agent = True
+    except Exception:
+        assessment = _fallback_readiness(manual_ingredients, analysis)
+        used_agent = False
+
+    usable = unique_clean(assessment.usable_ingredients)
+    recognized_from_agent = unique_clean(assessment.recognized_items or recognized)
+    can_generate = bool(assessment.can_generate and usable)
+
+    if not can_generate:
+        visible = ", ".join(recognized_from_agent)
+        reason = assessment.no_recipe_reason or (
+            "He reconocido esto: " + visible + ". "
+            "Con eso no puedo proponer recetas fiables sin inventar ingredientes. "
+            "Añade algún alimento más o escribe ingredientes manualmente y lo intento de nuevo."
+        )
         return IngredientReadiness(
             can_generate=False,
             usable_ingredients=[],
-            recognized_items=recognized,
-            reason=(
-                "He reconocido esto: " + visible + ". "
-                "Con eso no puedo proponer recetas fiables sin inventar ingredientes. "
-                "Añade algún alimento más o escribe ingredientes manualmente y lo intento de nuevo."
-            ),
+            recognized_items=recognized_from_agent,
+            reason=reason,
+            ignored_items=assessment.ignored_items,
+            used_agent=used_agent,
         )
 
     return IngredientReadiness(
         can_generate=True,
         usable_ingredients=usable,
-        recognized_items=recognized,
+        recognized_items=recognized_from_agent,
         reason="Hay ingredientes suficientes para buscar recetas realistas.",
+        ignored_items=assessment.ignored_items,
+        used_agent=used_agent,
     )
 
 
@@ -170,7 +239,10 @@ def build_no_recipe_response(readiness: IngredientReadiness) -> RecipeResponse:
             "No se han generado recetas porque no hay suficientes alimentos claros para cocinar sin inventar ingredientes."
         ],
         save_recommendation="Puedes guardar el resultado si quieres conservar el análisis, pero no es necesario.",
-        raw_agent_notes={"deterministic_guardrail": "insufficient_usable_ingredients"},
+        raw_agent_notes={
+            "readiness_agent": "blocked_recipe_generation",
+            "used_agent": readiness.used_agent,
+        },
         can_generate_recipes=False,
         no_recipe_reason=readiness.reason,
         recognized_ingredients=readiness.recognized_items,
