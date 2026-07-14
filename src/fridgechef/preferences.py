@@ -49,7 +49,7 @@ def field_label(field: str) -> str:
     if field == "intolerances":
         return "Intolerancias"
     if field == "dislikes":
-        return "No me gusta"
+        return "Alimentos que prefiero evitar"
     if field == "goals":
         return "Objetivo"
     return field

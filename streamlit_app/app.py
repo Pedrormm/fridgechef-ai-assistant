@@ -33,6 +33,7 @@ from src.fridgechef.preferences import PreferenceValidationError, validate_profi
 from src.fridgechef.recipe_planner import clean_user_text, generate_recipes, sentence_case
 from src.fridgechef.security import ImageValidationError, validate_image_upload
 from src.fridgechef.text_parser import ManualIngredientParseResult, parse_manual_ingredients
+from src.fridgechef.theme import build_theme_css, theme_label, theme_options
 from src.fridgechef.vision import analyze_image_bytes
 
 settings = get_settings()
@@ -90,6 +91,7 @@ def init_state() -> None:
         "inventory_persistence_backend": "",
         "inventory_persistence_ok": True,
         "inventory_persistence_warning": "",
+        "selected_visual_theme": "current",
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -130,10 +132,13 @@ def apply_app_style() -> None:
 
             footer,
             [data-testid="stDeployButton"],
-            .stDeployButton {
+            .stDeployButton,
+            #MainMenu,
+            [data-testid="stMainMenu"] {
                 display: none !important;
                 visibility: hidden !important;
                 height: 0 !important;
+                pointer-events: none !important;
             }
 
             /*
@@ -384,6 +389,7 @@ def apply_app_style() -> None:
                 */
                 [data-testid="stSidebarCollapsedControl"],
                 [data-testid="collapsedControl"],
+                [data-testid="stExpandSidebarButton"],
                 [data-testid="stSidebarCollapseButton"],
                 section[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] {
                     position: fixed !important;
@@ -391,20 +397,18 @@ def apply_app_style() -> None:
                     left: 0.75rem !important;
                     z-index: 1000002 !important;
                     pointer-events: auto !important;
+                    display: inline-flex !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
                     background: rgba(255, 255, 255, 0.86) !important;
                     border-radius: 0.75rem !important;
                     box-shadow: 0 6px 18px rgba(45, 49, 66, 0.12) !important;
                 }
-
-                /* The Streamlit three-dot menu is useful on desktop, but on
-                   phones it collides with the sidebar control and hurts the UI. */
-                #MainMenu,
-                [data-testid="stMainMenu"],
-                [data-testid="stToolbar"],
-                [data-testid="stStatusWidget"] {
-                    display: none !important;
-                    visibility: hidden !important;
-                    pointer-events: none !important;
+                [data-testid="stExpandSidebarButton"] button,
+                [data-testid="stSidebarCollapseButton"] button,
+                [data-testid="stSidebarCollapsedControl"] button,
+                [data-testid="collapsedControl"] button {
+                    pointer-events: auto !important;
                 }
             }
         </style>
@@ -674,6 +678,32 @@ def optional_multiselect_with_other(
     return clean_selected, custom_value
 
 
+def render_theme_selector() -> str:
+    """Show the three visual themes without changing app behaviour.
+
+    The widget writes directly into ``st.session_state``. That avoids the stale
+    value that can appear when a selectbox is rendered from a manually managed
+    index and then copied back after the widget has already been evaluated.
+    With a real widget key, Streamlit applies the selected theme on the same
+    rerun triggered by the user's first click.
+    """
+    options = theme_options()
+    current = st.session_state.get("selected_visual_theme", "current")
+    if current not in options:
+        st.session_state["selected_visual_theme"] = "current"
+
+    with st.sidebar:
+        st.selectbox(
+            "Tema visual",
+            options,
+            key="selected_visual_theme",
+            format_func=theme_label,
+            help="Cambia únicamente la estética de la aplicación. No modifica tus alimentos ni tus preferencias.",
+        )
+        st.divider()
+    return st.session_state.get("selected_visual_theme", "current")
+
+
 def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
     """Collect user preferences and persistence choices from the sidebar."""
     with st.sidebar:
@@ -691,17 +721,13 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
                 st.warning("El guardado permanente está desactivado en la configuración.")
             elif not persistence_ok:
                 st.warning("No he podido conectar con ninguna base de datos. Revisa los permisos o la carpeta del proyecto.")
-            elif "firestore" in backend and "sqlite" in backend:
-                st.caption("Guardado permanente activo en Firestore y en la base de datos local.")
-            elif "firestore" in backend:
-                st.caption("Guardado permanente activo en Firestore.")
             else:
-                st.caption("Guardado permanente activo en la base de datos local. No necesitas gcloud para usarlo.")
+                st.caption("Guarda los alimentos de tu nevera para no tener que volver a introducirlos la próxima vez.")
 
         update_mode: UpdateMode = "replace"
         if remember_fridge:
             update_choice = st.radio(
-                "Al añadir alimentos ahora",
+                "Al añadir alimentos:",
                 options=["replace", "add"],
                 index=1,
                 format_func=lambda value: "Sustituir por lo que analice ahora" if value == "replace" else "Añadir sin borrar lo anterior",
@@ -749,9 +775,9 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
 
         dislikes, custom_dislikes = optional_multiselect_with_other(
             "dislikes",
-            "No me gusta",
+            "Alimentos que prefiero evitar",
             ["Cebolla", "Ajo", "Pimiento", "Setas", "Picante", "Queso", "Tomate"],
-            "No quiero evitar nada por gusto (opcional)",
+            "No tengo alimentos que prefiera evitar (opcional)",
             "Otro alimento",
             "Ejemplo: cilantro, aceitunas...",
         )
@@ -778,7 +804,7 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
             custom_preferences["goals"] = custom_goals
 
         time_limit_min = st.slider(
-            "Tiempo máximo por receta",
+            "Tiempo máximo por receta (minutos)",
             10,
             90,
             30,
@@ -801,7 +827,7 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
             2,
             help="Cuántas ideas de recetas te gustaría recibir. Si no hay alimentos suficientes, mostraré menos y te lo explicaré.",
         )
-        st.caption("Intentaré preparar ese número de recetas, sin forzar opciones poco realistas.")
+        st.caption("Se generará el número solicitado de recetas, siempre que existan opciones realistas.")
         wants_target_recipe = st.toggle("Quiero hacer una receta concreta", value=False)
         target_recipe = st.text_input("Receta concreta", placeholder="Ejemplo: tortilla de patatas") if wants_target_recipe else ""
         extra_context = st.text_area(
@@ -1116,7 +1142,9 @@ def run_action_with_status(label: str, steps: list[str], action: Callable) -> ob
 
 
 init_state()
+selected_visual_theme = render_theme_selector()
 apply_app_style()
+st.markdown(build_theme_css(selected_visual_theme), unsafe_allow_html=True)
 profile, remember_fridge, update_mode = build_profile()
 show_hero()
 show_fridge_question_box(remember_fridge)
