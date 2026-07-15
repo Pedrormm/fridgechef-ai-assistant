@@ -1,5 +1,5 @@
 from src.fridgechef.inventory import apply_inventory_update, inventory_from_inputs, inventory_to_recipe_ingredients
-from src.fridgechef.models import DetectedIngredient, FridgeAnalysis, InventoryItem
+from src.fridgechef.models import DetectedIngredient, FridgeAnalysis, IngredientMention, InventoryItem
 
 
 def test_add_mode_merges_existing_items_without_duplicates():
@@ -54,3 +54,25 @@ def test_spoiled_items_are_not_used_for_recipes():
     ]
 
     assert inventory_to_recipe_ingredients(inventory) == ["Arroz"]
+
+
+def test_manual_spoiled_state_is_preserved_in_inventory():
+    items = inventory_from_inputs(
+        [],
+        None,
+        manual_items=[
+            IngredientMention(
+                name="tomates",
+                quantity_label="5 unidades",
+                state="spoiled",
+                source_text="5 tomates podridos",
+                confidence=0.99,
+            )
+        ],
+    )
+
+    assert len(items) == 1
+    assert items[0].name == "tomates"
+    assert items[0].quantity_label == "5 unidades"
+    assert items[0].state == "spoiled"
+    assert inventory_to_recipe_ingredients(items) == []
