@@ -142,6 +142,36 @@ Devuelve notas concisas en español, sin información privada.
         return ""
 
 
+def _generate_json_from_prompt(client, model_name: str, prompt: str) -> dict:
+    """Ask Gemini for JSON and retry once without JSON mode if the SDK/API rejects it.
+
+    The first call uses the strict JSON response mode because it gives the most
+    predictable output. Some temporary course projects or SDK combinations can
+    fail that mode while normal Gemini calls still work, so the second call keeps
+    the same agent prompt but lets the model answer as plain text and then parses
+    the JSON object from it. Both paths are still AI-based; no local food lists or
+    keyword shortcuts are used.
+    """
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json"),
+        )
+        return extract_json_object(response.text or "")
+    except Exception:
+        fallback_prompt = (
+            prompt
+            + "\n\nImportante: responde únicamente con el objeto JSON solicitado, sin texto antes ni después."
+        )
+        response = client.models.generate_content(
+            model=model_name,
+            contents=fallback_prompt,
+            config=types.GenerateContentConfig(temperature=0.0),
+        )
+        return extract_json_object(response.text or "")
+
+
 def _agentic_extraction(text: str, fragments: list[str]) -> ManualIngredientExtraction:
     """Run the language-understanding flow for manual fridge text."""
     if types is None:
@@ -193,12 +223,7 @@ Estructura obligatoria:
   "agent_notes": ["manual_input_agent"]
 }}
 """
-    response = client.models.generate_content(
-        model=settings.model_name,
-        contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json"),
-    )
-    data = extract_json_object(response.text)
+    data = _generate_json_from_prompt(client, settings.model_name, prompt)
     extraction = ManualIngredientExtraction.model_validate(data)
     return ensure_manual_extraction_spanish(extraction)
 

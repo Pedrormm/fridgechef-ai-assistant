@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import mimetypes
 import re
 import sys
@@ -30,6 +31,7 @@ from src.fridgechef.persistence import (
     save_session_if_allowed,
 )
 from src.fridgechef.preferences import PreferenceValidationError, validate_profile_preferences
+from src.fridgechef.recipe_images import attach_recipe_images
 from src.fridgechef.recipe_planner import clean_user_text, generate_recipes, sentence_case
 from src.fridgechef.security import ImageValidationError, validate_image_upload
 from src.fridgechef.text_parser import ManualIngredientParseResult, parse_manual_ingredients
@@ -254,6 +256,17 @@ def apply_app_style() -> None:
                 background: rgba(255,255,255,0.88);
                 box-shadow: 0 12px 34px rgba(45, 49, 66, 0.06);
             }
+            .recipe-image-heading {
+                margin-top: 1.2rem;
+                margin-bottom: 0.45rem;
+                font-weight: 800;
+                color: #2d3142;
+            }
+            .recipe-image-note {
+                color: rgba(45, 49, 66, 0.62);
+                font-size: 0.92rem;
+                margin-top: 0.25rem;
+            }
 
             [data-testid="stFileUploader"],
             [data-testid="stCameraInput"] {
@@ -332,7 +345,45 @@ def apply_app_style() -> None:
                 line-height: 1.45 !important;
             }
 
+            [data-testid="stTooltipHoverTarget"],
+            [data-testid="stTooltipIcon"] {
+                pointer-events: auto !important;
+                position: relative !important;
+                z-index: 1000004 !important;
+            }
+
             @media (max-width: 768px) {
+                [data-testid="stTooltipContent"],
+                [data-testid="stTooltipContent"] *,
+                div[role="tooltip"],
+                div[role="tooltip"] *,
+                div[data-baseweb="popover"][role="tooltip"],
+                div[data-baseweb="popover"][role="tooltip"] * {
+                    white-space: normal !important;
+                    overflow-wrap: break-word !important;
+                    word-break: normal !important;
+                    line-height: 1.35 !important;
+                    text-align: left !important;
+                }
+                [data-testid="stTooltipContent"],
+                div[role="tooltip"],
+                div[data-baseweb="popover"][role="tooltip"] {
+                    position: fixed !important;
+                    left: 0.8rem !important;
+                    right: 0.8rem !important;
+                    width: auto !important;
+                    min-width: 0 !important;
+                    max-width: calc(100vw - 1.6rem) !important;
+                    transform: none !important;
+                    z-index: 1000005 !important;
+                    box-sizing: border-box !important;
+                }
+                section[data-testid="stSidebar"] [data-testid="stTooltipHoverTarget"],
+                section[data-testid="stSidebar"] [data-testid="stTooltipIcon"] {
+                    pointer-events: auto !important;
+                    touch-action: manipulation !important;
+                    z-index: 1000006 !important;
+                }
                 .block-container {
                     padding: 4.3rem 0.85rem 3rem;
                 }
@@ -704,7 +755,7 @@ def render_theme_selector() -> str:
     return st.session_state.get("selected_visual_theme", "current")
 
 
-def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
+def build_profile() -> tuple[UserProfile, bool, UpdateMode, bool]:
     """Collect user preferences and persistence choices from the sidebar."""
     with st.sidebar:
         st.header("Perfil y preferencias")
@@ -834,6 +885,15 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
             "Contexto adicional",
             placeholder="Ejemplo: hoy he entrenado y quiero algo sencillo con proteína.",
         )
+        generate_recipe_images = st.toggle(
+            "Generar una imagen por cada receta",
+            value=False,
+            help="Al activar esta opción, se generará una imagen para cada receta.",
+        )
+        if generate_recipe_images:
+            st.caption("Al activar esta opción, se generará una imagen para cada receta.")
+        else:
+            st.caption("Si lo desactivas, mostraré solo el texto de las recetas.")
 
     profile = UserProfile(
         diet=diet,
@@ -849,7 +909,7 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode]:
         target_recipe=target_recipe,
         extra_context=extra_context,
     )
-    return profile, remember_fridge, update_mode
+    return profile, remember_fridge, update_mode, generate_recipe_images
 
 
 def show_hero() -> None:
@@ -960,7 +1020,20 @@ def _recipe_time_values(recipe) -> tuple[int, int, int]:
     return int(prep), int(cook), int(total)
 
 
-def show_recipes(response: RecipeResponse, profile: UserProfile) -> None:
+
+
+def _decode_recipe_image(recipe) -> bytes | None:
+    """Return recipe image bytes from the stored base64 payload."""
+    encoded = getattr(recipe, "image_base64", "") or ""
+    if not encoded:
+        return None
+    try:
+        payload = encoded.split(",", 1)[1] if encoded.startswith("data:") and "," in encoded else encoded
+        return base64.b64decode(payload)
+    except Exception:
+        return None
+
+def show_recipes(response: RecipeResponse, profile: UserProfile, show_images: bool = True) -> None:
     """Render recipe cards using a real recipe-page structure."""
     if not response.recipes:
         show_no_recipe_response(response)
@@ -1013,6 +1086,13 @@ def show_recipes(response: RecipeResponse, profile: UserProfile) -> None:
             if recipe.allergen_alerts:
                 st.warning("Revisa esto antes de cocinar: " + "; ".join(clean_user_text(note) for note in recipe.allergen_alerts))
 
+            recipe_image = _decode_recipe_image(recipe) if show_images else None
+            if recipe_image:
+                st.markdown("### Imagen de la receta")
+                st.image(recipe_image, caption="Imagen generada para esta receta", use_container_width=True)
+            elif show_images and getattr(recipe, "image_generation_error", ""):
+                st.caption(clean_user_text(recipe.image_generation_error))
+
 
 def analyze_current_inputs(
     manual_text: str,
@@ -1031,6 +1111,11 @@ def analyze_current_inputs(
         image_bytes = None
 
     if manual_text.strip() and not parse_result.accepted_items and not image_bytes:
+        if not parse_result.used_agent:
+            raise UserFacingError(
+                "No he podido conectar con el agente de IA que entiende los alimentos. "
+                "El texto parece válido, pero ahora mismo no puedo revisarlo con Gemini."
+            )
         raise UserFacingError(
             "No he encontrado alimentos claros en el texto. Escribe alimentos concretos, con cantidades si las conoces, y vuelve a intentarlo."
         )
@@ -1084,13 +1169,21 @@ def generate_recipes_from_current_inventory(
     profile: UserProfile,
     fallback_inventory: list[InventoryItem] | None = None,
     use_saved_inventory: bool = True,
+    generate_images: bool = True,
+    image_progress_callback: Callable[[int, int, bool], None] | None = None,
 ) -> RecipeResponse:
     """Generate recipes from the saved inventory or from the latest temporary analysis."""
     inventory = (get_inventory() if use_saved_inventory else []) or fallback_inventory or []
     ingredients = inventory_to_recipe_ingredients(inventory)
     if not ingredients:
         raise UserFacingError("No tengo ingredientes suficientes para generar recetas. Analiza la nevera o escribe alimentos primero.")
-    return generate_recipes(ingredients, profile, fridge_analysis=None)
+    response = generate_recipes(ingredients, profile, fridge_analysis=None)
+    return attach_recipe_images(
+        response,
+        profile,
+        enabled=generate_images,
+        progress_callback=image_progress_callback,
+    )
 
 
 def run_action_with_status(label: str, steps: list[str], action: Callable) -> object | None:
@@ -1145,7 +1238,7 @@ init_state()
 selected_visual_theme = render_theme_selector()
 apply_app_style()
 st.markdown(build_theme_css(selected_visual_theme), unsafe_allow_html=True)
-profile, remember_fridge, update_mode = build_profile()
+profile, remember_fridge, update_mode, generate_recipe_images = build_profile()
 show_hero()
 show_fridge_question_box(remember_fridge)
 if remember_fridge:
@@ -1314,21 +1407,40 @@ if recipes_clicked:
                 use_prepared_image,
                 "No es posible generar recetas si no se ha introducido ningún alimento. Escribe ingredientes o sube una foto y vuelve a intentarlo.",
             )
-            status.write("Preparando recetas con los alimentos disponibles.")
+            status.write("Creando recetas con los alimentos disponibles.")
+            if generate_recipe_images:
+                status.write("Generando también las imágenes de las recetas.")
             inventory = get_inventory() if remember_fridge else (update_result.inventory if update_result else [])
             validated_profile = validate_profile_preferences(profile)
-            response = generate_recipes_from_current_inventory(validated_profile, inventory, use_saved_inventory=remember_fridge)
+
+            def _image_progress(current: int, total: int, cache_hit: bool) -> None:
+                if not generate_recipe_images:
+                    return
+                status.write(f"Imagen {current} de {total}: preparando la imagen de la receta.")
+
+            response = generate_recipes_from_current_inventory(
+                validated_profile,
+                inventory,
+                use_saved_inventory=remember_fridge,
+                generate_images=generate_recipe_images,
+                image_progress_callback=_image_progress,
+            )
             st.session_state["last_recipes"] = response.model_dump()
             return parse_result, update_result, response
 
+        recipe_steps = [
+            "Revisando los alimentos disponibles.",
+            "Guardando los alimentos de tu nevera.",
+            "Comprobando qué recetas se pueden preparar.",
+            "Buscando recetas variadas, realistas y fáciles de seguir.",
+        ]
+        if generate_recipe_images:
+            recipe_steps.append("Preparando una imagen para cada receta.")
+        recipe_steps.append("¡Tus recetas ya están listas!")
+
         result = run_action_with_status(
             "Generando recetas",
-            [
-                "Revisando alimentos escritos o fotografiados.",
-                "Actualizando la nevera si has elegido recordarla.",
-                "Comprobando si hay alimentos suficientes para cocinar.",
-                "Recetas preparadas.",
-            ],
+            recipe_steps,
             _generate,
         )
         if result:
@@ -1336,4 +1448,4 @@ if recipes_clicked:
             show_manual_feedback(parse_result)
             if update_result and remember_fridge:
                 show_inventory_update(update_result)
-            show_recipes(response, profile)
+            show_recipes(response, profile, show_images=generate_recipe_images)

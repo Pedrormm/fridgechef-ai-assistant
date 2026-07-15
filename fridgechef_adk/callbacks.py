@@ -35,6 +35,12 @@ def before_model_guardrail(callback_context, llm_request):
     return None
 
 
-def after_tool_audit(callback_context, tool, args, result):
-    """Central hook for future structured tool logging."""
-    return result
+def after_tool_audit(*args, **kwargs):
+    """Keep ADK tool callbacks compatible across SDK versions.
+
+    ADK has changed the after-tool callback signature between versions. Some
+    releases pass positional arguments and newer releases pass named arguments
+    such as ``tool_context``. This hook only audits the call, so it deliberately
+    returns ``None`` and lets ADK keep the original tool response untouched.
+    """
+    return None

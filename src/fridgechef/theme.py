@@ -503,6 +503,39 @@ def _elegant_theme_css() -> str:
                 word-break: normal !important;
                 line-height: 1.25 !important;
             }
+            /*
+               The elegant mobile sidebar is wider than the default Streamlit
+               sidebar so the fridge-shelf option cards remain readable.
+               Streamlit collapses the sidebar by translating it by the saved
+               sidebar width; if we force a larger width without handling the
+               collapsed state, a strip of the panel remains visible and blocks
+               the app.  Only in the elegant mobile theme, when Streamlit marks
+               the sidebar as collapsed, we reduce the panel to zero width and
+               move it fully outside the viewport. The native expand button is
+               kept visible below, so opening it again still works.
+            */
+            section[data-testid="stSidebar"][aria-expanded="false"] {
+                width: 0 !important;
+                min-width: 0 !important;
+                max-width: 0 !important;
+                transform: translateX(-110vw) !important;
+                overflow: hidden !important;
+                box-shadow: none !important;
+                border-right: 0 !important;
+                pointer-events: none !important;
+            }
+            section[data-testid="stSidebar"][aria-expanded="false"] > div:first-child,
+            section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarContent"],
+            section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarUserContent"] {
+                width: 0 !important;
+                min-width: 0 !important;
+                max-width: 0 !important;
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+                overflow: hidden !important;
+                opacity: 0 !important;
+                pointer-events: none !important;
+            }
             [data-testid="stSidebarCollapsedControl"],
             [data-testid="collapsedControl"],
             [data-testid="stExpandSidebarButton"],
@@ -511,6 +544,14 @@ def _elegant_theme_css() -> str:
                 background: rgba(255, 255, 255, 0.90) !important;
                 color: #123047 !important;
                 border: 1px solid rgba(53, 183, 218, 0.18) !important;
+            }
+            [data-testid="stSidebarCollapsedControl"],
+            [data-testid="collapsedControl"],
+            [data-testid="stExpandSidebarButton"] {
+                pointer-events: auto !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                z-index: 1000003 !important;
             }
         }
     </style>

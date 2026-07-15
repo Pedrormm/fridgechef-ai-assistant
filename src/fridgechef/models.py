@@ -80,6 +80,10 @@ class RecipeItem(BaseModel):
     nutrition_notes: List[str] = Field(default_factory=list)
     shopping_list: List[str] = Field(default_factory=list)
     policy_status: str = "unchecked"
+    image_base64: str = ""
+    image_mime_type: str = "image/png"
+    image_prompt: str = ""
+    image_generation_error: str = ""
 
 
 class RecipeResponse(BaseModel):
