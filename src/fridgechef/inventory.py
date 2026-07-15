@@ -82,7 +82,7 @@ def inventory_from_inputs(
                 normalized_name=key,
                 quantity=1,
                 quantity_label=mention.quantity_label or "Cantidad no indicada",
-                state="unknown",
+                state=mention.state or "unknown",
                 confidence=mention.confidence or 1.0,
                 sources=[_source_label("manual")],
                 notes=unique_clean(notes),
