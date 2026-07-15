@@ -74,6 +74,21 @@ def _text_location() -> str:
     return (os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1") or "us-central1").strip()
 
 
+def _grounding_mode() -> str:
+    """Return the supported Google Search strategy for manual ingredient text."""
+    raw = (os.getenv("MANUAL_GROUNDING_MODE", "multiple_or_ambiguous") or "").strip().lower()
+    aliases = {
+        "multiple": "multiple_or_ambiguous",
+        "multiple_or_ambiguous": "multiple_or_ambiguous",
+        "always": "always",
+        "ambiguous": "ambiguous",
+        "off": "off",
+        "disabled": "off",
+        "false": "off",
+    }
+    return aliases.get(raw, "multiple_or_ambiguous")
+
+
 @dataclass(frozen=True)
 class Settings:
     """Central application settings loaded from .env and safe defaults."""
@@ -88,6 +103,8 @@ class Settings:
         os.getenv("VERTEX_TEXT_FALLBACK_MODELS", "gemini-2.5-flash-lite") or ""
     ).strip()
     manual_grounding_enabled: bool = _bool("MANUAL_GROUNDING_ENABLED", True)
+    manual_grounding_mode: str = _grounding_mode()
+    manual_grounding_min_fragments: int = max(2, _int("MANUAL_GROUNDING_MIN_FRAGMENTS", 2))
     genai_retry_attempts: int = max(1, min(_int("GENAI_RETRY_ATTEMPTS", 4), 8))
     genai_timeout_ms: int = max(10_000, _int("GENAI_TIMEOUT_MS", 120_000))
     image_location: str = (os.getenv("GOOGLE_CLOUD_IMAGE_LOCATION", "global") or "global").strip()
