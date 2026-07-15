@@ -61,3 +61,57 @@ def test_manual_parser_does_not_classify_food_locally_without_agent(monkeypatch)
     assert not result.accepted
     assert result.ignored
     assert not result.used_agent
+
+
+def test_plain_ingredient_list_does_not_trigger_search_grounding():
+    from src.fridgechef.text_parser import _needs_search_grounding
+
+    assert not _needs_search_grounding("4 patatas", ["4 patatas"])
+    assert not _needs_search_grounding(
+        "2 huevos, tomates cherry y queso",
+        ["2 huevos", "tomates cherry y queso"],
+    )
+
+
+def test_named_reference_can_trigger_search_grounding():
+    from src.fridgechef.text_parser import _needs_search_grounding
+
+    assert _needs_search_grounding("El pulpo Paul", ["El pulpo Paul"])
+    assert _needs_search_grounding("La oveja Dolly", ["La oveja Dolly"])
+
+
+def test_json_generation_uses_fallback_model_after_resource_exhausted(monkeypatch):
+    from types import SimpleNamespace
+
+    from src.fridgechef import text_parser
+    from src.fridgechef.text_parser import _generate_json_from_prompt
+
+    monkeypatch.setattr(
+        text_parser,
+        "types",
+        SimpleNamespace(GenerateContentConfig=lambda **kwargs: kwargs),
+    )
+
+    class ResourceExhausted(Exception):
+        code = 429
+
+    calls = []
+
+    class Models:
+        def generate_content(self, *, model, contents, config):
+            calls.append(model)
+            if model == "gemini-2.5-flash":
+                raise ResourceExhausted("429 RESOURCE_EXHAUSTED")
+            return SimpleNamespace(
+                text='{"accepted": [], "ignored": [], "reasoning_summary": "ok", "agent_notes": []}'
+            )
+
+    client = SimpleNamespace(models=Models())
+    result = _generate_json_from_prompt(
+        client,
+        ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        "prompt",
+    )
+
+    assert result["reasoning_summary"] == "ok"
+    assert calls == ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
