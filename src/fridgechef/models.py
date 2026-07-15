@@ -141,9 +141,27 @@ class IngredientMention(BaseModel):
 
     name: str
     quantity_label: str = "Cantidad no indicada"
+    state: str = "unknown"
     source_text: str = ""
     confidence: float = 0.0
     notes: List[str] = Field(default_factory=list)
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def normalize_state(cls, value: object) -> str:
+        """Keep manual freshness information inside the states used by the app."""
+        raw = str(value or "unknown").strip().lower()
+        if raw in {"fresh", "aging", "possible_spoiled", "spoiled", "unknown"}:
+            return raw
+        if any(marker in raw for marker in ("podrid", "estrope", "caduc", "spoiled", "rotten")):
+            return "spoiled"
+        if any(marker in raw for marker in ("posible", "possible", "duda", "sospech", "revis")):
+            return "possible_spoiled"
+        if any(marker in raw for marker in ("madur", "pasad", "aging", "usar pronto")):
+            return "aging"
+        if any(marker in raw for marker in ("fresc", "fresh", "buen estado")):
+            return "fresh"
+        return "unknown"
 
     @field_validator("confidence")
     @classmethod
