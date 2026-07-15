@@ -32,6 +32,12 @@ from src.fridgechef.inventory import (
     needs_replace_confirmation,
 )
 from src.fridgechef.models import FridgeAnalysis, InventoryItem, InventoryUpdateResult, RecipeResponse, UserProfile
+from src.fridgechef.inventory_editor import (
+    build_delete_confirmation_text,
+    inventory_state_options,
+    inventory_state_select_label,
+    validate_inventory_edit,
+)
 from src.fridgechef.persistence import (
     InventoryPersistenceResult,
     clear_inventory_state,
@@ -216,6 +222,7 @@ def init_state() -> None:
         "last_update": None,
         "last_recipes": None,
         "inventory_clear_message": "",
+        "inventory_action_message": None,
         "inventory_persistence_backend": "",
         "inventory_persistence_ok": True,
         "inventory_persistence_warning": "",
@@ -1105,8 +1112,203 @@ def show_manual_feedback(parse_result: ManualIngredientParseResult) -> None:
                 st.write(f"• **{clean_user_text(fragment.text)}** — {clean_user_text(fragment.reason)}")
 
 
-def show_inventory(inventory: list[InventoryItem], title: str = "Alimentos guardados") -> None:
-    """Display the fridge inventory as friendly, plain-text cards."""
+def _inventory_item_key(item: InventoryItem, index: int) -> str:
+    """Build a stable UI key for one inventory item card."""
+    return f"{index}_{_selector_key(item.normalized_name or item.name)}"
+
+
+def _find_inventory_index(item_key: str) -> int | None:
+    """Find the current position of an item, even after a rerun or reload."""
+    for index, item in enumerate(get_inventory()):
+        if (item.normalized_name or item.name) == item_key:
+            return index
+    return None
+
+
+def _inventory_message(text: str, kind: str = "success") -> None:
+    """Store one inventory action message to show after the dialog closes."""
+    st.session_state["inventory_action_message"] = {"kind": kind, "text": text}
+
+
+def show_inventory_action_message() -> None:
+    """Render and clear the last edit/delete confirmation message."""
+    message = st.session_state.get("inventory_action_message")
+    if not isinstance(message, dict):
+        return
+    text = str(message.get("text") or "")
+    kind = str(message.get("kind") or "success")
+    if kind == "warning":
+        st.warning(text)
+    elif kind == "error":
+        st.error(text)
+    else:
+        st.success(text)
+    st.session_state["inventory_action_message"] = None
+
+
+def _validation_messages_for_language(validation) -> tuple[str, ...]:
+    """Choose field-agent messages in the active interface language."""
+    return validation.messages_en if current_language() == "en" else validation.messages_es
+
+
+def _replace_inventory_item(index: int, updated_item: InventoryItem) -> bool:
+    """Persist an edited inventory item without changing the other cards."""
+    inventory = get_inventory()
+    if index < 0 or index >= len(inventory):
+        return False
+    inventory[index] = updated_item
+    set_inventory(inventory, persist=True)
+    return True
+
+
+def _delete_inventory_item(index: int) -> InventoryItem | None:
+    """Remove one inventory item and persist the new fridge state."""
+    inventory = get_inventory()
+    if index < 0 or index >= len(inventory):
+        return None
+    removed = inventory.pop(index)
+    set_inventory(inventory, persist=True)
+    st.session_state["last_recipes"] = None
+    return removed
+
+
+def show_edit_inventory_dialog(item_key: str) -> None:
+    """Open the ingredient editor modal for the selected saved food item."""
+
+    def _content() -> None:
+        index = _find_inventory_index(item_key)
+        if index is None:
+            st.warning("Ese alimento ya no está en la nevera guardada.")
+            if st.button("Entendido", type="primary", use_container_width=True):
+                st.rerun()
+            return
+
+        item = get_inventory()[index]
+        base_key = _inventory_item_key(item, index)
+        st.write("Modifica solo lo que necesites y guarda los cambios cuando esté todo correcto.")
+        new_name = st.text_input(
+            "Nombre del alimento",
+            value=item.name,
+            key=f"edit_name_{base_key}",
+            help="Debe ser un alimento o ingrediente claro para la nevera.",
+        )
+        new_quantity = st.text_input(
+            "Cantidad",
+            value=item.quantity_label or "Cantidad no indicada",
+            key=f"edit_quantity_{base_key}",
+            help="Puedes escribir unidades, gramos, litros o dejarlo como cantidad no indicada.",
+        )
+        state_options = inventory_state_options()
+        current_state = item.state if item.state in state_options else "unknown"
+        new_state = st.selectbox(
+            t("Estado"),
+            state_options,
+            index=state_options.index(current_state),
+            key=f"edit_state_{base_key}",
+            format_func=lambda value: inventory_state_select_label(value, current_language()),
+            help=t("Elige el estado actual del alimento."),
+            filter_mode=None,
+            __skip_i18n=True,
+        )
+
+        col_cancel, col_save = st.columns(2)
+        with col_cancel:
+            if st.button("Cancelar", key=f"cancel_edit_{base_key}", use_container_width=True):
+                st.rerun()
+        with col_save:
+            save_clicked = st.button("Guardar cambios", key=f"save_edit_{base_key}", type="primary", use_container_width=True)
+
+        if not save_clicked:
+            return
+
+        validation = validate_inventory_edit(new_name, new_quantity, new_state, language=current_language())
+        if not validation.ok:
+            for message in _validation_messages_for_language(validation):
+                st.warning(message, __skip_i18n=True)
+            return
+
+        duplicate = next(
+            (other for other_index, other in enumerate(get_inventory())
+             if other_index != index and other.normalized_name == validation.normalized_name),
+            None,
+        )
+        if duplicate:
+            duplicate_message = (
+                "Ya existe otro alimento guardado con ese nombre. Edita ese alimento o usa un nombre más específico."
+                if current_language() == "es"
+                else "Another saved food already has that name. Edit that food or use a more specific name."
+            )
+            st.warning(duplicate_message, __skip_i18n=True)
+            return
+
+        updated_item = item.model_copy(
+            update={
+                "name": validation.name,
+                "normalized_name": validation.normalized_name,
+                "quantity_label": validation.quantity_label,
+                "state": validation.state,
+            }
+        )
+        if not _replace_inventory_item(index, updated_item):
+            st.warning("No he podido guardar los cambios porque ese alimento ya no está disponible.")
+            return
+        _inventory_message("He actualizado el alimento guardado en tu nevera.")
+        st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog(t("Editar alimento"))
+        def _dialog() -> None:
+            _content()
+
+        _dialog()
+    else:  # pragma: no cover - older Streamlit compatibility
+        with st.container(border=True):
+            st.markdown("### " + t("Editar alimento"))
+            _content()
+
+
+def show_delete_inventory_dialog(item_key: str) -> None:
+    """Open a confirmation modal before removing one saved food item."""
+
+    def _content() -> None:
+        index = _find_inventory_index(item_key)
+        if index is None:
+            st.warning("Ese alimento ya se ha eliminado de la nevera guardada.")
+            if st.button("Entendido", type="primary", use_container_width=True):
+                st.rerun()
+            return
+
+        item = get_inventory()[index]
+        base_key = _inventory_item_key(item, index)
+        st.write(build_delete_confirmation_text(item.name, current_language()), __skip_i18n=True)
+        st.caption("Esta acción solo elimina este alimento de la lista guardada.")
+        col_cancel, col_delete = st.columns(2)
+        with col_cancel:
+            if st.button("Cancelar", key=f"cancel_delete_{base_key}", use_container_width=True):
+                st.rerun()
+        with col_delete:
+            if st.button("Sí, eliminar el alimento", key=f"confirm_delete_{base_key}", type="primary", use_container_width=True):
+                removed = _delete_inventory_item(index)
+                if removed is None:
+                    _inventory_message("Ese alimento ya no estaba en la nevera guardada.", "warning")
+                else:
+                    _inventory_message("He eliminado el alimento de tu nevera guardada.")
+                st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog(t("Eliminar alimento"))
+        def _dialog() -> None:
+            _content()
+
+        _dialog()
+    else:  # pragma: no cover - older Streamlit compatibility
+        with st.container(border=True):
+            st.markdown("### " + t("Eliminar alimento"))
+            _content()
+
+
+def show_inventory(inventory: list[InventoryItem], title: str = "Alimentos guardados", editable: bool = False) -> None:
+    """Display the fridge inventory as friendly cards, optionally with edit/delete actions."""
     st.subheader(title)
     if not inventory:
         st.info("Todavía no hay alimentos guardados. Escribe ingredientes o sube una foto para empezar.")
@@ -1116,7 +1318,21 @@ def show_inventory(inventory: list[InventoryItem], title: str = "Alimentos guard
     for index, item in enumerate(inventory):
         with columns[index % 2]:
             with st.container(border=True):
-                st.markdown(f"#### {sentence_case(item.name)}")
+                item_key = item.normalized_name or item.name
+                base_key = _inventory_item_key(item, index)
+                if editable:
+                    title_col, edit_col, delete_col = st.columns([0.74, 0.13, 0.13])
+                    with title_col:
+                        st.markdown(f"#### {sentence_case(item.name)}")
+                    with edit_col:
+                        if st.button("✏️", key=f"edit_inventory_{base_key}", help="Editar alimento", use_container_width=True):
+                            show_edit_inventory_dialog(item_key)
+                    with delete_col:
+                        if st.button("🗑️", key=f"delete_inventory_{base_key}", help="Eliminar alimento", use_container_width=True):
+                            show_delete_inventory_dialog(item_key)
+                else:
+                    st.markdown(f"#### {sentence_case(item.name)}")
+
                 st.write(f"**Cantidad:** {clean_user_text(item.quantity_label)}")
                 st.write(f"**Estado:** {friendly_state_label(item.state)}")
                 if item.expiry_text:
@@ -1388,7 +1604,8 @@ profile, remember_fridge, update_mode, generate_recipe_images = build_profile()
 show_hero()
 show_fridge_question_box(remember_fridge)
 if remember_fridge:
-    show_inventory(get_inventory(), title="Alimentos guardados")
+    show_inventory(get_inventory(), title="Alimentos guardados", editable=True)
+    show_inventory_action_message()
 
 st.header("1. Entrada")
 if remember_fridge:
@@ -1547,7 +1764,7 @@ if analyze_clicked:
                 show_inventory(update_result.inventory, title="Alimentos detectados")
             elif remember_fridge and get_inventory():
                 st.info("No se han introducido alimentos nuevos. Mantengo la nevera guardada tal como estaba.")
-                show_inventory(get_inventory(), title="Alimentos guardados actualmente")
+                show_inventory(get_inventory(), title="Alimentos guardados actualmente", editable=True)
 
 if recipes_clicked:
     if not has_available_input:
