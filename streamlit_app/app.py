@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import mimetypes
 import re
 import sys
@@ -15,6 +16,14 @@ sys.path.append(str(PROJECT_ROOT))
 from src.fridgechef.blink_camera import capture_blink_photo_sync
 from src.fridgechef.config import get_settings
 from src.fridgechef.fridge_qa import answer_fridge_question
+from src.fridgechef.i18n import (
+    install_streamlit_i18n,
+    language_option_label,
+    load_language_preference,
+    normalise_language,
+    save_language_preference,
+    translate_text,
+)
 from src.fridgechef.inventory import (
     apply_inventory_update,
     friendly_state_label,
@@ -66,6 +75,121 @@ InputSource = Literal["manual", "upload", "device_camera", "internal_camera"]
 ActionResult = tuple[FridgeAnalysis | None, InventoryUpdateResult | None, ManualIngredientParseResult]
 
 
+
+
+def current_language() -> str:
+    """Return the currently selected interface language."""
+    return normalise_language(st.session_state.get("app_language", "es"))
+
+
+def t(value: object) -> str:
+    """Translate visible text according to the selected language."""
+    return translate_text(value, current_language())
+
+
+def _html_text(value: object) -> str:
+    """Translate and escape text before it is injected into small HTML blocks."""
+    return html.escape(t(value), quote=False)
+
+
+def _css_content(value: object) -> str:
+    """Translate text and make it safe for a CSS content string."""
+    return t(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def _language_selector_css() -> str:
+    """Keep the language selector compact and device-specific.
+
+    Desktop/tablet shows only the language names. Mobile shows the same
+    selector with ES/US text prefixes. Both widgets exist with different
+    keys, but CSS displays only the one intended for the current viewport.
+    """
+    return """
+        <style>
+            .st-key-fc_language_selector_mobile,
+            .st-key-fc-language-selector-mobile {
+                display: none !important;
+            }
+            .st-key-fc_language_selector_desktop,
+            .st-key-fc-language-selector-desktop {
+                display: block !important;
+            }
+            .st-key-fc_language_selector_desktop [data-baseweb="select"] > div,
+            .st-key-fc-language-selector-desktop [data-baseweb="select"] > div,
+            .st-key-fc_language_selector_mobile [data-baseweb="select"] > div,
+            .st-key-fc-language-selector-mobile [data-baseweb="select"] > div {
+                min-height: 2.55rem !important;
+                border-radius: 14px !important;
+            }
+            @media (max-width: 768px) {
+                .st-key-fc_language_selector_desktop,
+                .st-key-fc-language-selector-desktop {
+                    display: none !important;
+                }
+                .st-key-fc_language_selector_mobile,
+                .st-key-fc-language-selector-mobile {
+                    display: block !important;
+                }
+                .st-key-fc_language_selector_mobile [data-baseweb="select"] > div,
+                .st-key-fc-language-selector-mobile [data-baseweb="select"] > div {
+                    min-height: 3rem !important;
+                }
+            }
+        </style>
+    """
+
+
+def _commit_language_selection(widget_key: str) -> None:
+    """Persist a language selected by one of the responsive selectors."""
+    selected_language = normalise_language(st.session_state.get(widget_key))
+    if selected_language != current_language():
+        save_language_preference(selected_language)
+        st.session_state["app_language"] = selected_language
+
+
+def render_language_selector() -> None:
+    """Render a compact, responsive language selector at the top right.
+
+    The desktop selector intentionally shows only the language name. The mobile
+    selector shows ES/US text prefixes. No SVG flags, emoji flags or CSS flag
+    overlays are used, so the text never overlaps the selectbox label.
+    """
+    current = current_language()
+    language_options = ("es", "en")
+    current_index = 1 if current == "en" else 0
+    desktop_key = f"app_language_widget_desktop_v8_{current}"
+    mobile_key = f"app_language_widget_mobile_v8_{current}"
+
+    _, selector_col = st.columns([0.78, 0.22])
+    with selector_col:
+        st.markdown(_language_selector_css(), unsafe_allow_html=True)
+        with st.container(key="fc_language_selector_desktop"):
+            st.selectbox(
+                "Idioma",
+                language_options,
+                index=current_index,
+                key=desktop_key,
+                format_func=lambda code: language_option_label(code, current_language(), mobile=False),
+                label_visibility="collapsed",
+                filter_mode=None,
+                on_change=_commit_language_selection,
+                args=(desktop_key,),
+                __skip_i18n=True,
+            )
+        with st.container(key="fc_language_selector_mobile"):
+            st.selectbox(
+                "Idioma",
+                language_options,
+                index=current_index,
+                key=mobile_key,
+                format_func=lambda code: language_option_label(code, current_language(), mobile=True),
+                label_visibility="collapsed",
+                filter_mode=None,
+                on_change=_commit_language_selection,
+                args=(mobile_key,),
+                __skip_i18n=True,
+            )
+
 class UserFacingError(Exception):
     """Expected validation error that can be shown without technical details."""
 
@@ -80,7 +204,9 @@ def _store_persistence_result(result: InventoryPersistenceResult) -> None:
 def init_state() -> None:
     """Create session state and restore the fridge from the database on refresh."""
     is_new_browser_session = "fridge_inventory" not in st.session_state
+    saved_language = load_language_preference() if is_new_browser_session else current_language()
     defaults = {
+        "app_language": saved_language,
         "current_image_bytes": None,
         "current_image_mime_type": "image/jpeg",
         "current_image_caption": "",
@@ -111,8 +237,12 @@ def apply_app_style() -> None:
     framework chrome is hidden, but the sidebar control stays visible because it
     is part of the product navigation on small screens and after manual collapse.
     """
-    st.markdown(
-        """
+    select_photo_text = _css_content("📷 Seleccionar foto")
+    take_photo_text = _css_content("Hacer foto")
+    upload_limit_text = _css_content("Hasta 200 MB por foto · JPG, PNG o WEBP")
+    upload_drop_text = _css_content("Arrastra una foto aquí o selecciónala desde tu dispositivo")
+    camera_permission_text = _css_content("Permite el acceso a la cámara para hacer la foto desde este dispositivo.")
+    css = """
         <style>
             :root {
                 --fc-primary: #ef5f73;
@@ -299,13 +429,13 @@ def apply_app_style() -> None:
             }
             [data-testid="stFileUploaderDropzone"] button::after,
             [data-testid="stFileUploader"] button::after {
-                content: "📷 Seleccionar foto";
+                content: "{select_photo_text}";
                 font-size: 0.95rem !important;
                 font-weight: 400 !important;
                 color: #2d3142 !important;
             }
             [data-testid="stCameraInput"] button::after {
-                content: "Hacer foto";
+                content: "{take_photo_text}";
                 font-size: 0.95rem !important;
                 font-weight: 400 !important;
                 color: #2d3142 !important;
@@ -322,12 +452,12 @@ def apply_app_style() -> None:
                 color: transparent !important;
             }
             [data-testid="stFileUploaderDropzone"] small::after {
-                content: "Hasta 200 MB por foto · JPG, PNG o WEBP";
+                content: "{upload_limit_text}";
                 font-size: 0.86rem !important;
                 color: rgba(45, 49, 66, 0.58) !important;
             }
             [data-testid="stFileUploaderDropzone"] > div:last-child::after {
-                content: "Arrastra una foto aquí o selecciónala desde tu dispositivo";
+                content: "{upload_drop_text}";
                 font-size: 0.9rem !important;
                 color: rgba(45, 49, 66, 0.62) !important;
             }
@@ -338,7 +468,7 @@ def apply_app_style() -> None:
                 font-size: 0 !important;
             }
             [data-testid="stCameraInput"] p::after {
-                content: "Permite el acceso a la cámara para hacer la foto desde este dispositivo.";
+                content: "{camera_permission_text}";
                 display: block;
                 color: rgba(45, 49, 66, 0.74) !important;
                 font-size: 1rem !important;
@@ -463,9 +593,15 @@ def apply_app_style() -> None:
                 }
             }
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
+    css = (
+        css.replace("{select_photo_text}", select_photo_text)
+        .replace("{take_photo_text}", take_photo_text)
+        .replace("{upload_limit_text}", upload_limit_text)
+        .replace("{upload_drop_text}", upload_drop_text)
+        .replace("{camera_permission_text}", camera_permission_text)
     )
+    st.markdown(css, unsafe_allow_html=True)
 
 def get_inventory() -> list[InventoryItem]:
     """Return the saved fridge inventory as Pydantic objects."""
@@ -523,29 +659,31 @@ def show_clear_inventory_dialog(remember_fridge: bool) -> None:
         already_empty = not bool(get_inventory())
 
         if already_empty:
-            st.markdown("### La nevera guardada ya está vacía")
-            st.write("Ahora mismo no hay alimentos guardados que borrar.")
-            if st.button("Entendido", type="primary", use_container_width=True):
+            st.markdown("### " + t("La nevera guardada ya está vacía"))
+            st.write(t("Ahora mismo no hay alimentos guardados que borrar."))
+            if st.button(t("Entendido"), type="primary", use_container_width=True):
                 st.session_state["inventory_clear_message"] = clear_inventory(remember_fridge)
                 st.rerun()
             return
 
-        st.markdown("### ¿Quieres vaciar la nevera guardada?")
+        st.markdown("### " + t("¿Quieres vaciar la nevera guardada?"))
         st.write(
-            "Se eliminará la lista de alimentos que tengo recordada para esta sesión. "
-            "No afectará a las fotos ni a los ingredientes que escribas después."
+            t(
+                "Se eliminará la lista de alimentos que tengo recordada para esta sesión. "
+                "No afectará a las fotos ni a los ingredientes que escribas después."
+            )
         )
         col_cancel, col_confirm = st.columns(2)
         with col_cancel:
-            if st.button("Cancelar", use_container_width=True):
+            if st.button(t("Cancelar"), use_container_width=True):
                 st.rerun()
         with col_confirm:
-            if st.button("Sí, vaciar la lista", type="primary", use_container_width=True):
+            if st.button(t("Sí, vaciar la lista"), type="primary", use_container_width=True):
                 st.session_state["inventory_clear_message"] = clear_inventory(remember_fridge)
                 st.rerun()
 
     if hasattr(st, "dialog"):
-        @st.dialog("Vaciar nevera guardada")
+        @st.dialog(t("Vaciar nevera guardada"))
         def _dialog() -> None:
             _confirm_content()
 
@@ -576,22 +714,22 @@ def capture_internal_camera_with_feedback() -> None:
     """Capture a fresh image from the fridge camera with friendly progress text."""
     with st.status("Conectando con la cámara interna", expanded=True) as status:
         try:
-            status.write("Preparando la conexión con la cámara que está dentro de la nevera.")
-            status.write("Solicitando una foto nueva para evitar usar una imagen anterior.")
+            status.write(t("Preparando la conexión con la cámara que está dentro de la nevera."))
+            status.write(t("Solicitando una foto nueva para evitar usar una imagen anterior."))
             output = capture_blink_photo_sync(
                 settings.blink_auth_file,
                 settings.blink_output_file,
                 settings.blink_max_stale_seconds,
             )
-            status.write("Comprobando que la foto se ha guardado correctamente.")
+            status.write(t("Comprobando que la foto se ha guardado correctamente."))
             image_bytes = Path(output).read_bytes()
             validate_image_upload(image_bytes, "image/jpeg", settings.max_image_mb)
             store_current_image(image_bytes, "image/jpeg", "Foto de cámara interna", "internal_camera")
-            status.update(label="Foto realizada", state="complete", expanded=False)
+            status.update(label=t("Foto realizada"), state="complete", expanded=False)
             st.success("Foto realizada correctamente.")
             st.image(image_bytes, caption="Foto preparada", use_container_width=True)
         except Exception as exc:
-            status.update(label="No he podido realizar la foto", state="error", expanded=False)
+            status.update(label=t("No he podido realizar la foto"), state="error", expanded=False)
             st.error(
                 "No he podido realizar una foto nueva con la cámara interna. "
                 "Revisa que esté conectada, con batería o alimentación, y vuelve a intentarlo."
@@ -732,25 +870,28 @@ def optional_multiselect_with_other(
 def render_theme_selector() -> str:
     """Show the three visual themes without changing app behaviour.
 
-    The widget writes directly into ``st.session_state``. That avoids the stale
-    value that can appear when a selectbox is rendered from a manually managed
-    index and then copied back after the widget has already been evaluated.
-    With a real widget key, Streamlit applies the selected theme on the same
-    rerun triggered by the user's first click.
+    The selected theme is stored in ``selected_visual_theme``. The visible
+    selectbox uses a language-versioned widget key so the displayed label is
+    rebuilt immediately after switching between Spanish and English.
     """
     options = theme_options()
     current = st.session_state.get("selected_visual_theme", "current")
     if current not in options:
-        st.session_state["selected_visual_theme"] = "current"
+        current = "current"
+        st.session_state["selected_visual_theme"] = current
 
     with st.sidebar:
-        st.selectbox(
+        selected = st.selectbox(
             "Tema visual",
             options,
-            key="selected_visual_theme",
+            index=options.index(current),
+            key=f"selected_visual_theme_widget_v2_{current_language()}",
             format_func=theme_label,
             help="Cambia únicamente la estética de la aplicación. No modifica tus alimentos ni tus preferencias.",
         )
+        if selected != current:
+            st.session_state["selected_visual_theme"] = selected
+            st.rerun()
         st.divider()
     return st.session_state.get("selected_visual_theme", "current")
 
@@ -914,14 +1055,16 @@ def build_profile() -> tuple[UserProfile, bool, UpdateMode, bool]:
 
 def show_hero() -> None:
     """Render the application title and product-level value proposition."""
+    hero_title = _html_text("🍽️ FridgeChef AI Assistant")
+    hero_text = _html_text(
+        "Descubre qué tienes en la nevera, mantén tu inventario al día y convierte tus alimentos "
+        "en ideas de comida sencillas, útiles y personalizadas."
+    )
     st.markdown(
-        """
+        f"""
         <div class="hero-card">
-            <h1 style="margin-bottom: 0.25rem;">🍽️ FridgeChef AI Assistant</h1>
-            <p class="muted" style="font-size: 1.08rem; margin-bottom: 0;">
-                Descubre qué tienes en la nevera, mantén tu inventario al día y convierte tus alimentos
-                en ideas de comida sencillas, útiles y personalizadas.
-            </p>
+            <h1 style="margin-bottom: 0.25rem;">{hero_title}</h1>
+            <p class="muted" style="font-size: 1.08rem; margin-bottom: 0;">{hero_text}</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -988,9 +1131,10 @@ def show_inventory(inventory: list[InventoryItem], title: str = "Alimentos guard
 def show_inventory_update(update_result: InventoryUpdateResult) -> None:
     """Explain how the inventory changed after a new analysis."""
     if update_result.mode == "replace":
-        st.markdown("<div class='success-soft'>He actualizado la nevera con lo que acabas de analizar.</div>", unsafe_allow_html=True)
+        message = _html_text("He actualizado la nevera con lo que acabas de analizar.")
     else:
-        st.markdown("<div class='success-soft'>He añadido los alimentos nuevos sin duplicar los que ya estaban guardados.</div>", unsafe_allow_html=True)
+        message = _html_text("He añadido los alimentos nuevos sin duplicar los que ya estaban guardados.")
+    st.markdown(f"<div class='success-soft'>{message}</div>", unsafe_allow_html=True)
 
     details = []
     if update_result.added:
@@ -1201,25 +1345,25 @@ def run_action_with_status(label: str, steps: list[str], action: Callable) -> ob
     with st.status(label, expanded=True) as status:
         try:
             for step in steps[:-1]:
-                status.write(step)
+                status.write(t(step))
             result = action(status)
-            status.write(steps[-1])
-            status.update(label="Listo", state="complete", expanded=False)
+            status.write(t(steps[-1]))
+            status.update(label=t("Listo"), state="complete", expanded=False)
             return result
         except UserFacingError as exc:
-            status.update(label="No se ha completado la acción", state="error", expanded=False)
+            status.update(label=t("No se ha completado la acción"), state="error", expanded=False)
             user_message = str(exc)
             message_kind = "warning"
         except ImageValidationError as exc:
-            status.update(label="No he podido leer la imagen", state="error", expanded=False)
+            status.update(label=t("No he podido leer la imagen"), state="error", expanded=False)
             user_message = str(exc)
             message_kind = "error"
         except PreferenceValidationError as exc:
-            status.update(label="Revisa tus preferencias", state="error", expanded=False)
+            status.update(label=t("Revisa tus preferencias"), state="error", expanded=False)
             preference_issues = [issue.message for issue in exc.issues]
             message_kind = "warning"
         except Exception:
-            status.update(label="No he podido terminar la operación", state="error", expanded=False)
+            status.update(label=t("No he podido terminar la operación"), state="error", expanded=False)
             user_message = "Ha ocurrido un problema inesperado. Revisa la entrada y vuelve a intentarlo en unos segundos."
             message_kind = "error"
 
@@ -1235,9 +1379,11 @@ def run_action_with_status(label: str, steps: list[str], action: Callable) -> ob
 
 
 init_state()
+install_streamlit_i18n(st, current_language)
 selected_visual_theme = render_theme_selector()
 apply_app_style()
 st.markdown(build_theme_css(selected_visual_theme), unsafe_allow_html=True)
+render_language_selector()
 profile, remember_fridge, update_mode, generate_recipe_images = build_profile()
 show_hero()
 show_fridge_question_box(remember_fridge)
@@ -1246,11 +1392,20 @@ if remember_fridge:
 
 st.header("1. Entrada")
 if remember_fridge:
-    st.markdown(
-        "<div class='soft-note'>Antes de añadir información, revisa cómo quieres actualizar tu nevera en el panel lateral. "
-        "Usa <strong>Sustituir</strong> para una foto o lista completa, y <strong>Añadir</strong> para una parte concreta como un cajón.</div>",
-        unsafe_allow_html=True,
+    soft_note = (
+        _html_text("Antes de añadir información, revisa cómo quieres actualizar tu nevera en el panel lateral.")
+        + " "
+        + _html_text("Usa")
+        + " <strong>"
+        + _html_text("Sustituir")
+        + "</strong> "
+        + _html_text("para una foto o lista completa, y")
+        + " <strong>"
+        + _html_text("Añadir")
+        + "</strong> "
+        + _html_text("para una parte concreta como un cajón.")
     )
+    st.markdown(f"<div class='soft-note'>{soft_note}</div>", unsafe_allow_html=True)
 
 available_tabs = ["Formulario", "Subir foto"]
 if can_offer_device_camera():
@@ -1356,7 +1511,8 @@ if clear_clicked:
     show_clear_inventory_dialog(remember_fridge)
 
 if st.session_state.get("inventory_clear_message"):
-    st.markdown(f"<div class='danger-soft'>{st.session_state['inventory_clear_message']}</div>", unsafe_allow_html=True)
+    clear_message = _html_text(st.session_state["inventory_clear_message"])
+    st.markdown(f"<div class='danger-soft'>{clear_message}</div>", unsafe_allow_html=True)
     st.session_state["inventory_clear_message"] = ""
 
 has_available_input = bool(manual_text.strip() or use_prepared_image or (remember_fridge and get_inventory()))
@@ -1407,16 +1563,16 @@ if recipes_clicked:
                 use_prepared_image,
                 "No es posible generar recetas si no se ha introducido ningún alimento. Escribe ingredientes o sube una foto y vuelve a intentarlo.",
             )
-            status.write("Creando recetas con los alimentos disponibles.")
+            status.write(t("Creando recetas con los alimentos disponibles."))
             if generate_recipe_images:
-                status.write("Generando también las imágenes de las recetas.")
+                status.write(t("Generando también las imágenes de las recetas."))
             inventory = get_inventory() if remember_fridge else (update_result.inventory if update_result else [])
             validated_profile = validate_profile_preferences(profile)
 
             def _image_progress(current: int, total: int, cache_hit: bool) -> None:
                 if not generate_recipe_images:
                     return
-                status.write(f"Imagen {current} de {total}: preparando la imagen de la receta.")
+                status.write(t(f"Imagen {current} de {total}: preparando la imagen de la receta."))
 
             response = generate_recipes_from_current_inventory(
                 validated_profile,

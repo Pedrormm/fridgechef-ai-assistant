@@ -400,12 +400,8 @@ def _elegant_theme_css() -> str:
             font-weight: 800 !important;
         }
         [data-testid="stFileUploaderDropzone"] button::after,
-        [data-testid="stFileUploader"] button::after {
-            content: "📸 Seleccionar foto" !important;
-            color: #123047 !important;
-        }
+        [data-testid="stFileUploader"] button::after,
         [data-testid="stCameraInput"] button::after {
-            content: "📷 Hacer foto" !important;
             color: #123047 !important;
         }
 
