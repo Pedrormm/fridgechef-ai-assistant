@@ -7,8 +7,10 @@ from src.fridgechef.config import get_settings
 
 try:
     from google import genai
+    from google.genai import types as genai_types
 except Exception:  # pragma: no cover - useful for local tests without cloud SDKs
     genai = None
+    genai_types = None
 
 try:
     from google.oauth2 import service_account
@@ -17,16 +19,18 @@ except Exception:  # pragma: no cover - useful for local tests without google-au
 
 
 _CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+_RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504]
 
 
 def get_client(location: str | None = None):
-    """Create a Vertex AI client using the current project settings.
+    """Create a resilient Vertex AI client using the current project settings.
 
-    In local Windows development, Application Default Credentials can resolve the
-    service-account JSON implicitly. In Docker on the NAS, the JSON is mounted at
-    runtime, so loading it explicitly avoids environment-dependent ADC failures.
+    The service-account JSON is loaded explicitly so Docker does not depend on
+    machine-specific Application Default Credentials. Production defaults to the
+    global endpoint through Settings, and transient capacity errors are retried
+    with bounded exponential backoff.
     """
-    if genai is None:
+    if genai is None or genai_types is None:
         raise RuntimeError("La librería google-genai no está instalada en este entorno.")
 
     settings = get_settings()
@@ -53,9 +57,22 @@ def get_client(location: str | None = None):
             f"No existe el fichero de credenciales configurado: {credentials_path}."
         )
 
+    http_options = genai_types.HttpOptions(
+        retry_options=genai_types.HttpRetryOptions(
+            initial_delay=1.0,
+            attempts=settings.genai_retry_attempts,
+            max_delay=8.0,
+            exp_base=2.0,
+            jitter=1.0,
+            http_status_codes=_RETRYABLE_STATUS_CODES,
+        ),
+        timeout=settings.genai_timeout_ms,
+    )
+
     return genai.Client(
         vertexai=True,
         credentials=credentials,
         project=settings.project_id,
         location=location or settings.location,
+        http_options=http_options,
     )
