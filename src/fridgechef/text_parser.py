@@ -90,12 +90,7 @@ def split_user_text(text: str) -> list[str]:
 
 
 def _agent_unavailable_extraction(fragments: list[str]) -> ManualIngredientExtraction:
-    """Return a safe result when the semantic agent cannot be reached.
-
-    The course requirement forbids replacing semantic understanding with local
-    keyword tables. Therefore this fallback does not classify food locally; it
-    asks the user to retry when the AI agent is available.
-    """
+    """Return a safe result when the semantic agent cannot be reached."""
     return ManualIngredientExtraction(
         accepted=[],
         ignored=[
@@ -110,11 +105,84 @@ def _agent_unavailable_extraction(fragments: list[str]) -> ManualIngredientExtra
     )
 
 
+def _needs_search_grounding(text: str, fragments: list[str]) -> bool:
+    """Detect references that may genuinely benefit from Google Search.
+
+    This does not classify food. It only avoids spending an extra model request
+    on ordinary fridge lists such as "4 patatas" while preserving the search
+    sub-agent for names, links, brands, acronyms and cultural references.
+    """
+    if re.search(r'https?://|www\.|[@#]|["“”«»]', text or "", flags=re.IGNORECASE):
+        return True
+
+    normalized = normalize_text(text)
+    reference_markers = (
+        "se llama",
+        "conocido como",
+        "personaje",
+        "famos",
+        "meme",
+        "pelicula",
+        "serie",
+        "marca",
+        "pokemon",
+        "videojuego",
+        "artista",
+        "cantante",
+        "actor",
+        "deportista",
+    )
+    if any(marker in normalized for marker in reference_markers):
+        return True
+
+    for fragment in fragments:
+        words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9][\wÁÉÍÓÚÜÑáéíóúüñ-]*", fragment)
+        for index, word in enumerate(words):
+            if index > 0 and (word[:1].isupper() or (len(word) > 1 and word.isupper())):
+                return True
+    return False
+
+
+def _model_candidates(primary_model: str, fallback_models: str) -> list[str]:
+    """Build a deduplicated model fallback chain."""
+    candidates: list[str] = []
+    for value in [primary_model, *fallback_models.split(",")]:
+        model = str(value or "").strip()
+        if model and model not in candidates:
+            candidates.append(model)
+    return candidates
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """Identify capacity and transient service failures after SDK retries."""
+    code = getattr(exc, "code", None)
+    try:
+        if int(code) in {408, 429, 500, 502, 503, 504}:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    message = str(exc).upper()
+    return any(
+        marker in message
+        for marker in (
+            "RESOURCE_EXHAUSTED",
+            "TOO MANY REQUESTS",
+            "SERVICE_UNAVAILABLE",
+            "DEADLINE_EXCEEDED",
+            "INTERNAL SERVER ERROR",
+        )
+    )
+
+
 def _ground_ambiguous_references(text: str, fragments: list[str]) -> str:
-    """Ask a search-enabled sub-agent for context about ambiguous references."""
+    """Ask a search-enabled sub-agent only for genuinely ambiguous references."""
+    settings = get_settings()
+    if not settings.manual_grounding_enabled or not _needs_search_grounding(text, fragments):
+        return ""
+
     try:
         client = get_client()
-        settings = get_settings()
         prompt = f"""
 Eres el subagente de búsqueda de FridgeChef AI Assistant.
 
@@ -142,47 +210,73 @@ Devuelve notas concisas en español, sin información privada.
         )
         return response.text or ""
     except Exception as exc:
-        logger.warning("El subagente de búsqueda no está disponible: %s", exc, exc_info=True)
+        logger.warning("El subagente de búsqueda no está disponible: %s", exc)
         return ""
 
 
-def _generate_json_from_prompt(client, model_name: str, prompt: str) -> dict:
-    """Ask Gemini for JSON and retry once without JSON mode if the SDK/API rejects it.
+def _generate_json_from_prompt(client, model_names: list[str], prompt: str) -> dict:
+    """Ask Gemini for JSON with model failover and no quota-amplifying retries.
 
-    The first call uses the strict JSON response mode because it gives the most
-    predictable output. Some temporary course projects or SDK combinations can
-    fail that mode while normal Gemini calls still work, so the second call keeps
-    the same agent prompt but lets the model answer as plain text and then parses
-    the JSON object from it. Both paths are still AI-based; no local food lists or
-    keyword shortcuts are used.
+    The Gen AI SDK already retries transient 429/5xx responses with exponential
+    backoff. If a model still exhausts capacity after those retries, this function
+    moves to the next configured model instead of immediately issuing the same
+    request again in plain-text mode.
     """
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json"),
-        )
-        return extract_json_object(response.text or "")
-    except Exception as exc:
-        logger.warning("Gemini rechazó el modo JSON; se reintenta en modo texto: %s", exc)
-        fallback_prompt = (
-            prompt
-            + "\n\nImportante: responde únicamente con el objeto JSON solicitado, sin texto antes ni después."
-        )
-        response = client.models.generate_content(
-            model=model_name,
-            contents=fallback_prompt,
-            config=types.GenerateContentConfig(temperature=0.0),
-        )
-        return extract_json_object(response.text or "")
+    last_error: Exception | None = None
+
+    for model_name in model_names:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                ),
+            )
+            return extract_json_object(response.text or "")
+        except Exception as exc:
+            last_error = exc
+            if _is_retryable_error(exc):
+                logger.warning(
+                    "El modelo %s agotó temporalmente su capacidad; se probará el siguiente modelo configurado: %s",
+                    model_name,
+                    exc,
+                )
+                continue
+
+            logger.warning(
+                "El modelo %s no aceptó el modo JSON; se reintenta una vez en modo texto: %s",
+                model_name,
+                exc,
+            )
+            try:
+                fallback_prompt = (
+                    prompt
+                    + "\n\nImportante: responde únicamente con el objeto JSON solicitado, sin texto antes ni después."
+                )
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=fallback_prompt,
+                    config=types.GenerateContentConfig(temperature=0.0),
+                )
+                return extract_json_object(response.text or "")
+            except Exception as fallback_exc:
+                last_error = fallback_exc
+                logger.warning("El modelo %s también falló en modo texto: %s", model_name, fallback_exc)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No hay modelos de texto configurados para el agente de comprensión.")
 
 
 def _agentic_extraction(text: str, fragments: list[str]) -> ManualIngredientExtraction:
     """Run the language-understanding flow for manual fridge text."""
     if types is None:
         raise RuntimeError("google-genai types are not available in this environment.")
-    client = get_client()
+
     settings = get_settings()
+    client = get_client()
     grounding_notes = _ground_ambiguous_references(text, fragments)
 
     prompt = f"""
@@ -228,7 +322,8 @@ Estructura obligatoria:
   "agent_notes": ["manual_input_agent"]
 }}
 """
-    data = _generate_json_from_prompt(client, settings.model_name, prompt)
+    models = _model_candidates(settings.model_name, settings.text_fallback_models)
+    data = _generate_json_from_prompt(client, models, prompt)
     extraction = ManualIngredientExtraction.model_validate(data)
     return ensure_manual_extraction_spanish(extraction)
 
@@ -256,12 +351,7 @@ def _to_parse_result(extraction: ManualIngredientExtraction, used_agent: bool) -
 
 
 def parse_manual_ingredients(text: str, extractor: Extractor | None = None) -> ManualIngredientParseResult:
-    """Extract fridge ingredients from natural language using an agentic flow.
-
-    Tests can inject an extractor so behavior is deterministic without external
-    calls. When the agent is unavailable, the function does not emulate semantic
-    understanding with local word lists; it returns a safe, friendly message.
-    """
+    """Extract fridge ingredients from natural language using an agentic flow."""
     fragments = split_user_text(text or "")
     if not fragments:
         return ManualIngredientParseResult()
