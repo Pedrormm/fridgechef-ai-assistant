@@ -10,9 +10,22 @@ try:
 except Exception:  # pragma: no cover - useful for local tests without cloud SDKs
     genai = None
 
+try:
+    from google.oauth2 import service_account
+except Exception:  # pragma: no cover - useful for local tests without google-auth
+    service_account = None
+
+
+_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+
 
 def get_client(location: str | None = None):
-    """Create a Vertex AI client using the current project settings."""
+    """Create a Vertex AI client using the current project settings.
+
+    In local Windows development, Application Default Credentials can resolve the
+    service-account JSON implicitly. In Docker on the NAS, the JSON is mounted at
+    runtime, so loading it explicitly avoids environment-dependent ADC failures.
+    """
     if genai is None:
         raise RuntimeError("La librería google-genai no está instalada en este entorno.")
 
@@ -22,12 +35,27 @@ def get_client(location: str | None = None):
             "No encuentro el proyecto de Google Cloud. Revisa GOOGLE_CLOUD_PROJECT, PROJECT_ID o credentials.json."
         )
 
-    # google-genai uses Application Default Credentials under the hood. The .env
-    # usually stores a relative path, so make it absolute here before any model
-    # call. This avoids confusing failures when Streamlit, ADK or a BAT file runs
-    # from a slightly different working directory.
+    credentials = None
     credentials_path = Path(settings.credentials_path)
     if credentials_path.exists():
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials_path.resolve())
+        resolved_path = credentials_path.resolve()
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(resolved_path)
 
-    return genai.Client(vertexai=True, project=settings.project_id, location=location or settings.location)
+        if service_account is None:
+            raise RuntimeError("La librería google-auth no está disponible para cargar credentials.json.")
+
+        credentials = service_account.Credentials.from_service_account_file(
+            str(resolved_path),
+            scopes=[_CLOUD_PLATFORM_SCOPE],
+        )
+    elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        raise RuntimeError(
+            f"No existe el fichero de credenciales configurado: {credentials_path}."
+        )
+
+    return genai.Client(
+        vertexai=True,
+        credentials=credentials,
+        project=settings.project_id,
+        location=location or settings.location,
+    )
