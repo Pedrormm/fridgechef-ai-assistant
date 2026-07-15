@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from src.fridgechef.json_utils import extract_json_object
 from src.fridgechef.llm_client import get_client
 from src.fridgechef.models import IgnoredTextFragment, IngredientMention, ManualIngredientExtraction
 from src.fridgechef.spanish_guard import ensure_manual_extraction_spanish
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -138,7 +141,8 @@ Devuelve notas concisas en español, sin información privada.
             ),
         )
         return response.text or ""
-    except Exception:
+    except Exception as exc:
+        logger.warning("El subagente de búsqueda no está disponible: %s", exc, exc_info=True)
         return ""
 
 
@@ -159,7 +163,8 @@ def _generate_json_from_prompt(client, model_name: str, prompt: str) -> dict:
             config=types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json"),
         )
         return extract_json_object(response.text or "")
-    except Exception:
+    except Exception as exc:
+        logger.warning("Gemini rechazó el modo JSON; se reintenta en modo texto: %s", exc)
         fallback_prompt = (
             prompt
             + "\n\nImportante: responde únicamente con el objeto JSON solicitado, sin texto antes ni después."
@@ -268,6 +273,7 @@ def parse_manual_ingredients(text: str, extractor: Extractor | None = None) -> M
     try:
         extraction = _agentic_extraction(text, fragments)
         return _to_parse_result(extraction, used_agent=True)
-    except Exception:
+    except Exception as exc:
+        logger.error("No se pudo ejecutar el agente de comprensión manual: %s", exc, exc_info=True)
         extraction = _agent_unavailable_extraction(fragments)
         return _to_parse_result(extraction, used_agent=False)
