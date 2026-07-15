@@ -57,6 +57,23 @@ def _project_id_from_credentials() -> str:
         return ""
 
 
+def _text_location() -> str:
+    """Choose the most reliable endpoint for text and vision requests.
+
+    Production defaults to the global endpoint because it can route around
+    regional capacity problems. Local development keeps the configured region
+    unless VERTEX_PREFER_GLOBAL_ENDPOINT is explicitly enabled.
+    """
+    app_env = (os.getenv("APP_ENV", "dev") or "dev").strip().lower()
+    prefer_global = _bool("VERTEX_PREFER_GLOBAL_ENDPOINT", app_env == "prod")
+    explicit_text_location = (os.getenv("GOOGLE_CLOUD_TEXT_LOCATION") or "").strip()
+    if explicit_text_location:
+        return explicit_text_location
+    if prefer_global:
+        return "global"
+    return (os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1") or "us-central1").strip()
+
+
 @dataclass(frozen=True)
 class Settings:
     """Central application settings loaded from .env and safe defaults."""
@@ -65,8 +82,14 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "dev")
     credentials_path: str = str(_credential_path())
     project_id: str = _project_id_from_credentials()
-    location: str = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    location: str = _text_location()
     model_name: str = os.getenv("VERTEX_MODEL", "gemini-2.5-flash")
+    text_fallback_models: str = (
+        os.getenv("VERTEX_TEXT_FALLBACK_MODELS", "gemini-2.5-flash-lite") or ""
+    ).strip()
+    manual_grounding_enabled: bool = _bool("MANUAL_GROUNDING_ENABLED", True)
+    genai_retry_attempts: int = max(1, min(_int("GENAI_RETRY_ATTEMPTS", 4), 8))
+    genai_timeout_ms: int = max(10_000, _int("GENAI_TIMEOUT_MS", 120_000))
     image_location: str = (os.getenv("GOOGLE_CLOUD_IMAGE_LOCATION", "global") or "global").strip()
     recipe_image_provider: str = (os.getenv("RECIPE_IMAGE_PROVIDER", "gemini") or "gemini").strip().lower()
     image_model_name: str = (os.getenv("VERTEX_IMAGE_MODEL", "gemini-2.5-flash-image") or "gemini-2.5-flash-image").strip()
