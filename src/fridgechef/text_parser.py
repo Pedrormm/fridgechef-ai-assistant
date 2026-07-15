@@ -21,6 +21,24 @@ from src.fridgechef.spanish_guard import ensure_manual_extraction_spanish
 logger = logging.getLogger(__name__)
 
 
+def _clean_manual_extraction(extraction: ManualIngredientExtraction) -> ManualIngredientExtraction:
+    """Apply the local display-safety guard without launching another model call."""
+    return ensure_manual_extraction_spanish(
+        extraction,
+        agent=lambda payload, _context: payload,
+    )
+
+
+@dataclass(frozen=True)
+class GroundingResult:
+    """Google Search context and optional complete extraction for manual input."""
+
+    used: bool = False
+    notes: str = ""
+    search_queries: list[str] = field(default_factory=list)
+    extraction: ManualIngredientExtraction | None = None
+
+
 @dataclass(frozen=True)
 class ManualIngredientParseResult:
     """Validated manual input split into food items and rejected text fragments."""
@@ -31,6 +49,8 @@ class ManualIngredientParseResult:
     ignored_fragments: list[IgnoredTextFragment] = field(default_factory=list)
     agent_notes: list[str] = field(default_factory=list)
     used_agent: bool = False
+    search_used: bool = False
+    search_queries: list[str] = field(default_factory=list)
 
     @property
     def has_food(self) -> bool:
@@ -70,11 +90,7 @@ def unique_preserving_order(items: Iterable[str]) -> list[str]:
 
 
 def split_user_text(text: str) -> list[str]:
-    """Split free text into short reviewable fragments.
-
-    This step only prepares the text for the language agent. It does not decide
-    whether a fragment is food, and it does not rely on food dictionaries.
-    """
+    """Split free text into short reviewable fragments."""
     if not text or not text.strip():
         return []
 
@@ -90,7 +106,7 @@ def split_user_text(text: str) -> list[str]:
 
 
 def _agent_unavailable_extraction(fragments: list[str]) -> ManualIngredientExtraction:
-    """Return a safe result when the semantic agent cannot be reached."""
+    """Return a safe result when every configured AI model is unavailable."""
     return ManualIngredientExtraction(
         accepted=[],
         ignored=[
@@ -105,13 +121,8 @@ def _agent_unavailable_extraction(fragments: list[str]) -> ManualIngredientExtra
     )
 
 
-def _needs_search_grounding(text: str, fragments: list[str]) -> bool:
-    """Detect references that may genuinely benefit from Google Search.
-
-    This does not classify food. It only avoids spending an extra model request
-    on ordinary fridge lists such as "4 patatas" while preserving the search
-    sub-agent for names, links, brands, acronyms and cultural references.
-    """
+def _contains_ambiguous_reference(text: str, fragments: list[str]) -> bool:
+    """Detect names, links and cultural references that benefit from web context."""
     if re.search(r'https?://|www\.|[@#]|["“”«»]', text or "", flags=re.IGNORECASE):
         return True
 
@@ -143,6 +154,31 @@ def _needs_search_grounding(text: str, fragments: list[str]) -> bool:
     return False
 
 
+def _needs_search_grounding(
+    text: str,
+    fragments: list[str],
+    mode: str = "multiple_or_ambiguous",
+    min_fragments: int = 2,
+) -> bool:
+    """Choose whether manual input must be checked with Google Search.
+
+    The default deliberately grounds every multi-fragment list in one combined
+    request. This lets the agent distinguish food from names, jokes and unrelated
+    objects without launching one search request per fragment.
+    """
+    normalized_mode = (mode or "multiple_or_ambiguous").strip().lower()
+    if normalized_mode == "off":
+        return False
+    if normalized_mode == "always":
+        return True
+
+    ambiguous = _contains_ambiguous_reference(text, fragments)
+    if normalized_mode == "ambiguous":
+        return ambiguous
+
+    return len(fragments) >= max(2, min_fragments) or ambiguous
+
+
 def _model_candidates(primary_model: str, fallback_models: str) -> list[str]:
     """Build a deduplicated model fallback chain."""
     candidates: list[str] = []
@@ -171,56 +207,184 @@ def _is_retryable_error(exc: Exception) -> bool:
             "SERVICE_UNAVAILABLE",
             "DEADLINE_EXCEEDED",
             "INTERNAL SERVER ERROR",
+            "BAD GATEWAY",
+            "GATEWAY TIMEOUT",
         )
     )
 
 
-def _ground_ambiguous_references(text: str, fragments: list[str]) -> str:
-    """Ask a search-enabled sub-agent only for genuinely ambiguous references."""
-    settings = get_settings()
-    if not settings.manual_grounding_enabled or not _needs_search_grounding(text, fragments):
-        return ""
-
+def _search_queries_from_response(response) -> list[str]:
+    """Read Google Search Suggestions from Gen AI SDK response metadata."""
     try:
-        client = get_client()
-        prompt = f"""
-Eres el subagente de búsqueda de FridgeChef AI Assistant.
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return []
+        metadata = getattr(candidates[0], "grounding_metadata", None)
+        if metadata is None:
+            return []
+        queries = getattr(metadata, "web_search_queries", None)
+        if queries is None and isinstance(metadata, dict):
+            queries = metadata.get("webSearchQueries") or metadata.get("web_search_queries")
+        return unique_preserving_order(str(query) for query in (queries or []))
+    except Exception:
+        return []
 
-Tarea:
-- Revisa el texto del usuario y sus fragmentos.
-- Usa Google Search solo si una parte puede referirse a una entidad ambigua, un nombre propio, una marca o una referencia cultural.
-- No extraigas ingredientes aquí. Devuelve únicamente notas breves que ayuden a otro agente a decidir si cada fragmento describe un alimento disponible.
-- Escribe siempre en español de España.
 
-Texto del usuario:
+def _manual_extraction_prompt(text: str, fragments: list[str], grounding_notes: str = "") -> str:
+    """Build the shared extraction contract for grounded and normal requests."""
+    return f"""
+Eres el agente de comprensión de texto de FridgeChef AI Assistant.
+
+Objetivo:
+Extrae únicamente alimentos reales que el usuario afirma tener disponibles.
+
+Reglas:
+- Comprende lenguaje natural en español o inglés.
+- Evalúa todos los fragmentos de forma conjunta.
+- Conserva la cantidad de cada alimento.
+- Conserva el estado indicado por el usuario.
+- Separa el estado del nombre: "5 tomates podridos" debe producir nombre "tomates", cantidad "5 unidades" y estado "spoiled".
+- Rechaza objetos, comentarios, bromas, nombres propios y referencias culturales aunque contengan el nombre de un animal o alimento.
+- "El pulpo Paul" es una referencia cultural y no un ingrediente disponible.
+- "Una bombilla", "los ingleses no saben nada" y "todo pa atrás" no son alimentos.
+- No inventes cantidades ni estados.
+- Usa exactamente uno de estos estados internos:
+  * fresh: el usuario dice que está fresco o en buen estado.
+  * aging: está maduro, pasado o conviene usarlo pronto, pero no afirma que esté estropeado.
+  * possible_spoiled: hay dudas o signos posibles de deterioro.
+  * spoiled: el usuario afirma que está podrido, caducado o estropeado.
+  * unknown: no se indica el estado.
+- Todos los textos visibles deben estar en español de España.
+- Devuelve solo un objeto JSON válido.
+
+Texto completo:
 {text}
 
 Fragmentos:
 {json.dumps(fragments, ensure_ascii=False, indent=2)}
 
-Devuelve notas concisas en español, sin información privada.
+Contexto obtenido mediante Google Search:
+{grounding_notes or "Sin notas adicionales."}
+
+Estructura obligatoria:
+{{
+  "accepted": [
+    {{
+      "name": "nombre del alimento sin cantidad ni adjetivo de estado",
+      "quantity_label": "cantidad clara en español, o Cantidad no indicada",
+      "state": "fresh|aging|possible_spoiled|spoiled|unknown",
+      "source_text": "fragmento exacto del usuario",
+      "confidence": 0.0,
+      "notes": ["explicación breve en español"]
+    }}
+  ],
+  "ignored": [
+    {{"text": "fragmento ignorado", "reason": "motivo amable en español"}}
+  ],
+  "reasoning_summary": "resumen breve en español",
+  "agent_notes": ["manual_input_agent"]
+}}
+
+Ejemplo:
+Entrada: "5 tomates podridos, 1 pepino, 4 patatas, el pulpo Paul, una bombilla, los ingleses no saben nada, alcachofa, todo pa atrás, filete de ternera"
+Resultado esperado:
+- Aceptar tomates, pepino, patatas, alcachofa y filete de ternera.
+- Tomates: cantidad "5 unidades" y estado "spoiled".
+- Pepino: cantidad "1 unidad".
+- Patatas: cantidad "4 unidades".
+- Alcachofa y filete de ternera: "Cantidad no indicada".
+- Ignorar el pulpo Paul, la bombilla y los comentarios.
 """
-        response = client.models.generate_content(
-            model=settings.model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-            ),
+
+
+def _ground_manual_input(
+    text: str,
+    fragments: list[str],
+    model_names: list[str],
+) -> GroundingResult:
+    """Use one Google-grounded request for an entire mixed manual list.
+
+    The grounded response is asked to perform the full extraction. If it returns
+    valid JSON, no second model call is needed. If it returns useful prose instead,
+    that prose becomes context for the normal structured-output request.
+    """
+    settings = get_settings()
+    if not settings.manual_grounding_enabled:
+        return GroundingResult()
+    if not _needs_search_grounding(
+        text,
+        fragments,
+        mode=getattr(settings, "manual_grounding_mode", "multiple_or_ambiguous"),
+        min_fragments=getattr(settings, "manual_grounding_min_fragments", 2),
+    ):
+        return GroundingResult()
+
+    if types is None:
+        raise RuntimeError("google-genai types are not available in this environment.")
+
+    client = get_client()
+    prompt = _manual_extraction_prompt(text, fragments)
+
+    last_error: Exception | None = None
+    for model_name in model_names:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=1.0,
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
+            response_text = response.text or ""
+            queries = _search_queries_from_response(response)
+            try:
+                data = extract_json_object(response_text)
+                extraction = _clean_manual_extraction(
+                    ManualIngredientExtraction.model_validate(data)
+                )
+                return GroundingResult(
+                    used=True,
+                    notes=response_text,
+                    search_queries=queries,
+                    extraction=extraction,
+                )
+            except Exception as parse_exc:
+                logger.info(
+                    "La respuesta con Google Search se usará como contexto porque no era JSON estructurado: %s",
+                    parse_exc,
+                )
+                return GroundingResult(
+                    used=True,
+                    notes=response_text,
+                    search_queries=queries,
+                )
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "El modelo %s no pudo completar la comprobación con Google Search: %s",
+                model_name,
+                exc,
+            )
+            # The client has already applied exponential backoff. Move to the
+            # next model instead of repeating the same request immediately.
+            continue
+
+    if last_error is not None:
+        logger.warning(
+            "Google Search no estuvo disponible tras probar todos los modelos; "
+            "se continuará con la extracción estructurada sin grounding: %s",
+            last_error,
         )
-        return response.text or ""
-    except Exception as exc:
-        logger.warning("El subagente de búsqueda no está disponible: %s", exc)
-        return ""
+    return GroundingResult()
 
 
 def _generate_json_from_prompt(client, model_names: list[str], prompt: str) -> dict:
-    """Ask Gemini for JSON with model failover and no quota-amplifying retries.
+    """Ask Gemini for JSON with exponential backoff and model failover.
 
-    The Gen AI SDK already retries transient 429/5xx responses with exponential
-    backoff. If a model still exhausts capacity after those retries, this function
-    moves to the next configured model instead of immediately issuing the same
-    request again in plain-text mode.
+    HTTP retries are handled by the Gen AI client. This function avoids retry
+    amplification: after a transient error survives those retries, it changes to
+    the next configured model rather than issuing the same request immediately.
     """
     last_error: Exception | None = None
 
@@ -239,7 +403,8 @@ def _generate_json_from_prompt(client, model_names: list[str], prompt: str) -> d
             last_error = exc
             if _is_retryable_error(exc):
                 logger.warning(
-                    "El modelo %s agotó temporalmente su capacidad; se probará el siguiente modelo configurado: %s",
+                    "El modelo %s sigue sin capacidad tras los reintentos exponenciales; "
+                    "se probará el siguiente modelo: %s",
                     model_name,
                     exc,
                 )
@@ -270,66 +435,36 @@ def _generate_json_from_prompt(client, model_names: list[str], prompt: str) -> d
     raise RuntimeError("No hay modelos de texto configurados para el agente de comprensión.")
 
 
-def _agentic_extraction(text: str, fragments: list[str]) -> ManualIngredientExtraction:
-    """Run the language-understanding flow for manual fridge text."""
+def _agentic_extraction(
+    text: str,
+    fragments: list[str],
+) -> tuple[ManualIngredientExtraction, GroundingResult]:
+    """Run grounded or structured language understanding for manual fridge text."""
     if types is None:
         raise RuntimeError("google-genai types are not available in this environment.")
 
     settings = get_settings()
-    client = get_client()
-    grounding_notes = _ground_ambiguous_references(text, fragments)
-
-    prompt = f"""
-Eres el agente de comprensión de texto de FridgeChef AI Assistant.
-
-Objetivo:
-Extrae solo alimentos reales que el usuario afirma tener disponibles para cocinar o revisar.
-
-Reglas:
-- Comprende lenguaje natural en español o inglés.
-- Decide por significado y contexto, no mediante listas fijas de alimentos.
-- Conserva cantidades cuando aparezcan.
-- Rechaza comentarios, bromas, nombres propios, referencias culturales, objetos que no sean comida y frases ajenas a la nevera.
-- Si el texto mezcla alimentos y partes no relacionadas, conserva los alimentos y explica de forma amable lo que se ha ignorado.
-- Normaliza el nombre a un ingrediente claro, sin convertirlo en una frase larga.
-- Todos los textos visibles deben estar en español de España.
-- Devuelve solo JSON válido.
-
-Texto del usuario:
-{text}
-
-Fragmentos que debes evaluar:
-{json.dumps(fragments, ensure_ascii=False, indent=2)}
-
-Notas del subagente de búsqueda:
-{grounding_notes or "Sin notas adicionales."}
-
-Estructura obligatoria:
-{{
-  "accepted": [
-    {{
-      "name": "nombre del alimento sin la cantidad",
-      "quantity_label": "cantidad en español claro, o Cantidad no indicada",
-      "source_text": "fragmento exacto del usuario que originó el alimento",
-      "confidence": 0.0,
-      "notes": ["explicación breve en español"]
-    }}
-  ],
-  "ignored": [
-    {{"text": "fragmento ignorado", "reason": "motivo amable en español"}}
-  ],
-  "reasoning_summary": "resumen breve en español",
-  "agent_notes": ["manual_input_agent"]
-}}
-"""
     models = _model_candidates(settings.model_name, settings.text_fallback_models)
+    grounding = _ground_manual_input(text, fragments, models)
+
+    if grounding.extraction is not None:
+        return grounding.extraction, grounding
+
+    client = get_client()
+    prompt = _manual_extraction_prompt(text, fragments, grounding.notes)
     data = _generate_json_from_prompt(client, models, prompt)
-    extraction = ManualIngredientExtraction.model_validate(data)
-    return ensure_manual_extraction_spanish(extraction)
+    extraction = _clean_manual_extraction(
+        ManualIngredientExtraction.model_validate(data)
+    )
+    return extraction, grounding
 
 
-def _to_parse_result(extraction: ManualIngredientExtraction, used_agent: bool) -> ManualIngredientParseResult:
-    """Convert the structured agent output into the stable public return type."""
+def _to_parse_result(
+    extraction: ManualIngredientExtraction,
+    used_agent: bool,
+    grounding: GroundingResult | None = None,
+) -> ManualIngredientParseResult:
+    """Convert structured agent output into the stable public return type."""
     accepted_items = []
     seen: set[str] = set()
     for item in extraction.accepted:
@@ -340,6 +475,7 @@ def _to_parse_result(extraction: ManualIngredientExtraction, used_agent: bool) -
             seen.add(key)
 
     ignored_fragments = [fragment for fragment in extraction.ignored if clean_fragment(fragment.text)]
+    grounding = grounding or GroundingResult()
     return ManualIngredientParseResult(
         accepted=[item.name for item in accepted_items],
         ignored=[fragment.text for fragment in ignored_fragments],
@@ -347,6 +483,8 @@ def _to_parse_result(extraction: ManualIngredientExtraction, used_agent: bool) -
         ignored_fragments=ignored_fragments,
         agent_notes=[extraction.reasoning_summary, *extraction.agent_notes],
         used_agent=used_agent,
+        search_used=grounding.used,
+        search_queries=grounding.search_queries,
     )
 
 
@@ -357,12 +495,12 @@ def parse_manual_ingredients(text: str, extractor: Extractor | None = None) -> M
         return ManualIngredientParseResult()
 
     if extractor:
-        extraction = ensure_manual_extraction_spanish(extractor(text, fragments))
+        extraction = _clean_manual_extraction(extractor(text, fragments))
         return _to_parse_result(extraction, used_agent=True)
 
     try:
-        extraction = _agentic_extraction(text, fragments)
-        return _to_parse_result(extraction, used_agent=True)
+        extraction, grounding = _agentic_extraction(text, fragments)
+        return _to_parse_result(extraction, used_agent=True, grounding=grounding)
     except Exception as exc:
         logger.error("No se pudo ejecutar el agente de comprensión manual: %s", exc, exc_info=True)
         extraction = _agent_unavailable_extraction(fragments)
