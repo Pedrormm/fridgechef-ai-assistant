@@ -90,7 +90,7 @@ jobs:
           repository = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GH_TOKEN"]
           api_root = f"https://api.github.com/repos/{repository}"
-          target_branch = "validated/saved-inventory-expander"
+          target_branch = "validated-saved-inventory-expander"
 
           def request(method: str, path: str, payload: dict | None = None) -> dict:
               data = None if payload is None else json.dumps(payload).encode("utf-8")
