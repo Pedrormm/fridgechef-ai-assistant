@@ -106,6 +106,7 @@ class InventoryItem(BaseModel):
     normalized_name: str
     quantity: int = 1
     quantity_label: str = "Cantidad no indicada"
+    quantity_parts: Dict[str, float] = Field(default_factory=dict)
     state: str = "unknown"
     expiry_text: Optional[str] = None
     confidence: float = 0.0
@@ -118,11 +119,39 @@ class InventoryItem(BaseModel):
         """Avoid displaying zero or negative quantities after merges."""
         return max(1, int(value or 1))
 
+    @field_validator("quantity_parts", mode="before")
+    @classmethod
+    def keep_positive_quantity_parts(cls, value: object) -> Dict[str, float]:
+        """Ignore invalid persisted quantity fragments without breaking legacy rows."""
+        if not isinstance(value, dict):
+            return {}
+        result: Dict[str, float] = {}
+        for raw_unit, raw_amount in value.items():
+            unit = str(raw_unit or "").strip()
+            if not unit:
+                continue
+            try:
+                amount = float(raw_amount)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                result[unit] = amount
+        return result
+
     @field_validator("confidence")
     @classmethod
     def keep_confidence_range(cls, value: float) -> float:
         """Keep confidence values display-safe and comparable."""
         return max(0.0, min(1.0, float(value or 0.0)))
+
+
+class InventoryQuantityChange(BaseModel):
+    """Quantity delta produced when an incoming item matches a saved item."""
+
+    name: str
+    previous_quantity_label: str
+    incoming_quantity_label: str
+    resulting_quantity_label: str
 
 
 class InventoryUpdateResult(BaseModel):
@@ -133,6 +162,7 @@ class InventoryUpdateResult(BaseModel):
     updated: List[str] = Field(default_factory=list)
     removed: List[str] = Field(default_factory=list)
     ignored: List[str] = Field(default_factory=list)
+    quantity_changes: List[InventoryQuantityChange] = Field(default_factory=list)
     mode: str = "replace"
 
 
