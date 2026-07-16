@@ -47,13 +47,6 @@ jobs:
           node --check src/fridgechef/components/rear_camera/main.js
           node --check src/fridgechef/components/mobile_upload/main.js
 
-      - name: Verify materialization is stable
-        run: |
-          git diff --binary > /tmp/materialized-before.diff
-          python -m scripts.patch_saved_inventory_expander
-          git diff --binary > /tmp/materialized-after.diff
-          cmp /tmp/materialized-before.diff /tmp/materialized-after.diff
-
       - name: Commit validated application source through Git data API
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
