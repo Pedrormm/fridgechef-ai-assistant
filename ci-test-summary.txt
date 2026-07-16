@@ -1,0 +1,10 @@
+........................................................................ [ 57%]
+.........................................F............                   [100%]
+=================================== FAILURES ===================================
+_______ test_theme_persistence_patch_is_applied_in_every_container_build _______
+tests/test_theme_persistence_contract.py:32: in test_theme_persistence_patch_is_applied_in_every_container_build
+    assert "python -m scripts.patch_theme_persistence" in source
+E   assert 'python -m scripts.patch_theme_persistence' in 'FROM python:3.11-slim\n\nENV PYTHONDONTWRITEBYTECODE=1\nENV PYTHONUNBUFFERED=1\n\nWORKDIR /app\n\nRUN apt-get update ...reamlit", "run", "streamlit_app/app.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.headless=true"]\n'
+=========================== short test summary info ============================
+FAILED tests/test_theme_persistence_contract.py::test_theme_persistence_patch_is_applied_in_every_container_build - assert 'python -m scripts.patch_theme_persistence' in 'FROM python:3.11-slim\n\nENV PYTHONDONTWRITEBYTECODE=1\nENV PYTHONUNBUFFERED=1\n\nWORKDIR /app\n\nRUN apt-get update ...reamlit", "run", "streamlit_app/app.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.headless=true"]\n'
+1 failed, 125 passed in 3.25s
