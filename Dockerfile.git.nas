@@ -31,6 +31,7 @@ RUN python /app/_nas_runtime_patch.py \
     && python -m scripts.patch_multi_input_analysis \
     && python -m scripts.patch_multi_input_tabs \
     && python -m scripts.patch_replace_semantics \
+    && python -m scripts.patch_multi_input_messages \
     && rm -f /app/_nas_runtime_patch.py \
     && mkdir -p /app/data /app/photos /app/backups /app/logs /app/secrets
 

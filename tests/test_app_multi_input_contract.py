@@ -29,6 +29,14 @@ def test_app_uses_atomic_multi_input_inventory_pipeline():
     assert "set_inventory(update_result.inventory, persist=True)" in source
 
 
+def test_empty_detection_messages_match_the_persistence_mode():
+    source = _app_source()
+
+    assert 'if remember_fridge and get_inventory()' in source
+    assert 'else "No se ha guardado ningún cambio."' in source
+    assert "the fridge had {previous_quantity}" in source
+
+
 def test_previous_mobile_and_widget_key_fixes_are_preserved():
     source = _app_source()
 

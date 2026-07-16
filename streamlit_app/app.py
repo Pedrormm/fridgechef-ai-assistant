@@ -1439,12 +1439,18 @@ def show_inventory_update(update_result: InventoryUpdateResult) -> None:
 
     for change in update_result.quantity_changes:
         if current_language() == "en":
+            previous_quantity = display_quantity_label(
+                {}, change.previous_quantity_label, "en"
+            )
+            incoming_quantity = display_quantity_label(
+                {}, change.incoming_quantity_label, "en"
+            )
+            resulting_quantity = display_quantity_label(
+                {}, change.resulting_quantity_label, "en"
+            )
             quantity_message = (
-                f"{sentence_case(change.name)}: there were "
-                f"{display_quantity_label({}, change.previous_quantity_label, 'en')}, "
-                f"{display_quantity_label({}, change.incoming_quantity_label, 'en')} were added, "
-                f"and there are now "
-                f"{display_quantity_label({}, change.resulting_quantity_label, 'en')}."
+                f"{sentence_case(change.name)}: the fridge had {previous_quantity}; "
+                f"I added {incoming_quantity}, so it now has {resulting_quantity}."
             )
         else:
             quantity_message = (
@@ -1608,26 +1614,28 @@ def analyze_current_inputs(
         image_results,
     )
     if not incoming_items:
+        unchanged_message = (
+            "Mantengo la nevera guardada tal como estaba."
+            if remember_fridge and get_inventory()
+            else "No se ha guardado ningún cambio."
+        )
         if manual_text.strip() and images:
             message = (
                 "No he encontrado alimentos ni en el texto ni en las fotos preparadas. "
-                "Mantengo la nevera guardada tal como estaba."
+                + unchanged_message
             )
         elif images:
             message = (
                 "No he encontrado alimentos claros en las fotos preparadas. "
-                "Mantengo la nevera guardada tal como estaba."
+                + unchanged_message
             )
         elif not parse_result.used_agent:
             message = (
                 "No he podido conectar con el agente de IA que entiende los alimentos. "
-                "No he cambiado la nevera guardada."
+                + unchanged_message
             )
         else:
-            message = (
-                "No he encontrado alimentos claros en el texto. "
-                "Mantengo la nevera guardada tal como estaba."
-            )
+            message = "No he encontrado alimentos claros en el texto. " + unchanged_message
         raise UserFacingError(message)
 
     analysis = merge_fridge_analyses(result for _, result in image_results)
