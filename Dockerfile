@@ -24,7 +24,8 @@ RUN python scripts/apply_mobile_camera_fix.py \
     && python -m scripts.patch_multi_input_tabs \
     && python -m scripts.patch_replace_semantics \
     && python -m scripts.patch_multi_input_messages \
-    && python -m scripts.patch_recipe_results_only
+    && python -m scripts.patch_recipe_results_only \
+    && python -m scripts.patch_upload_and_camera_reliability
 
 EXPOSE 8080
 
