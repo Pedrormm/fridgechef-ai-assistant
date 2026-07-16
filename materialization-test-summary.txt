@@ -1,0 +1,63 @@
+...........F.................................F.......................... [ 57%]
+......................................................                   [100%]
+=================================== FAILURES ===================================
+______ test_generate_flow_renders_recipes_without_detected_food_feedback _______
+tests/test_app_multi_input_contract.py:82: in test_generate_flow_renders_recipes_without_detected_food_feedback
+    assert "show_recipes(response, profile" in generate_block
+E   assert 'show_recipes(response, profile' in '\n    if not has_available_input:\n        st.warning("No es posible generar recetas si no se ha introducido ningún a...       profile,\n            show_images=bool(st.session_state.get("last_recipe_images_enabled", False)),\n        )\n'
+______________ test_vertex_client_configures_exponential_backoff _______________
+tests/test_llm_client.py:43: in test_vertex_client_configures_exponential_backoff
+    assert captured["retry"] == {
+E   AssertionError: assert {'initial_del...se': 2.0, ...} == {'initial_del...se': 2.0, ...}
+E     
+E     Omitting 5 identical items, use -vv to show
+E     Differing items:
+E     {'max_delay': 16.0} != {'max_delay': 8.0}
+E     
+E     Full diff:
+E       {
+E           'initial_delay': 1.0,
+E           'attempts': 4,
+E     -     'max_delay': 8.0,
+E     ?                  ^
+E     +     'max_delay': 16.0,
+E     ?                  ^^
+E           'exp_base': 2.0,
+E           'jitter': 1.0,
+E           'http_status_codes': [
+E               408,
+E               429,
+E               500,
+E               502,
+E               503,
+E               504,
+E           ],
+E       }
+=========================== short test summary info ============================
+FAILED tests/test_app_multi_input_contract.py::test_generate_flow_renders_recipes_without_detected_food_feedback - assert 'show_recipes(response, profile' in '\n    if not has_available_input:\n        st.warning("No es posible generar recetas si no se ha introducido ningún a...       profile,\n            show_images=bool(st.session_state.get("last_recipe_images_enabled", False)),\n        )\n'
+FAILED tests/test_llm_client.py::test_vertex_client_configures_exponential_backoff - AssertionError: assert {'initial_del...se': 2.0, ...} == {'initial_del...se': 2.0, ...}
+  
+  Omitting 5 identical items, use -vv to show
+  Differing items:
+  {'max_delay': 16.0} != {'max_delay': 8.0}
+  
+  Full diff:
+    {
+        'initial_delay': 1.0,
+        'attempts': 4,
+  -     'max_delay': 8.0,
+  ?                  ^
+  +     'max_delay': 16.0,
+  ?                  ^^
+        'exp_base': 2.0,
+        'jitter': 1.0,
+        'http_status_codes': [
+            408,
+            429,
+            500,
+            502,
+            503,
+            504,
+        ],
+    }
+2 failed, 124 passed in 3.56s
