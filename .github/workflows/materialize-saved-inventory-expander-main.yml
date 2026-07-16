@@ -36,27 +36,7 @@ jobs:
           git checkout origin/feat/collapsible-saved-inventory-v3 -- tests/test_saved_inventory_expander.py 2>&1 | tee -a /tmp/saved-inventory-validation.log
 
       - name: Materialize application source
-        run: |
-          set -o pipefail
-          python -m scripts.patch_saved_inventory_expander 2>&1 | tee -a /tmp/saved-inventory-validation.log
-          python - <<'PY' 2>&1 | tee -a /tmp/saved-inventory-validation.log
-          from pathlib import Path
-
-          path = Path("tests/test_workflow_hygiene.py")
-          source = path.read_text(encoding="utf-8")
-          old = '    Path(".github/workflows/materialize-brand-free-food-names.yml"),\n'
-          new = (
-              old
-              + '    Path(".github/workflows/materialize-saved-inventory-expander.yml"),\n'
-              + '    Path(".github/workflows/materialize-saved-inventory-expander-main.yml"),\n'
-          )
-          if new not in source:
-              if source.count(old) != 1:
-                  raise RuntimeError("The workflow hygiene target has changed unexpectedly.")
-              source = source.replace(old, new, 1)
-          path.write_text(source, encoding="utf-8")
-          PY
-          rm .github/workflows/materialize-saved-inventory-expander-main.yml
+        run: python -m scripts.patch_saved_inventory_expander 2>&1 | tee -a /tmp/saved-inventory-validation.log
 
       - name: Install dependencies
         run: python -m pip install --requirement requirements.txt 2>&1 | tee -a /tmp/saved-inventory-validation.log
@@ -73,7 +53,7 @@ jobs:
           node --check src/fridgechef/components/rear_camera/main.js 2>&1 | tee -a /tmp/saved-inventory-validation.log
           node --check src/fridgechef/components/mobile_upload/main.js 2>&1 | tee -a /tmp/saved-inventory-validation.log
 
-      - name: Create validated review branch
+      - name: Publish validated application commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -83,14 +63,13 @@ jobs:
           import base64
           import json
           import os
-          import urllib.error
           import urllib.request
           from pathlib import Path
 
           repository = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GH_TOKEN"]
           api_root = f"https://api.github.com/repos/{repository}"
-          target_branch = "validated-saved-inventory-expander"
+          target_branch = "feat/collapsible-saved-inventory-v3"
 
           def request(method: str, path: str, payload: dict | None = None) -> dict:
               data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -108,16 +87,14 @@ jobs:
               with urllib.request.urlopen(request_object, timeout=60) as response:
                   return json.loads(response.read().decode("utf-8"))
 
-          ref = request("GET", "/git/ref/heads/main")
-          parent_sha = ref["object"]["sha"]
+          main_ref = request("GET", "/git/ref/heads/main")
+          parent_sha = main_ref["object"]["sha"]
           parent_commit = request("GET", f"/git/commits/{parent_sha}")
 
           paths = (
               "streamlit_app/app.py",
-              ".github/workflows/apply-additive-multi-input.yml",
               "scripts/patch_saved_inventory_expander.py",
               "tests/test_saved_inventory_expander.py",
-              "tests/test_workflow_hygiene.py",
           )
           tree_entries = []
           for file_path in paths:
@@ -131,15 +108,6 @@ jobs:
                   {"path": file_path, "mode": "100644", "type": "blob", "sha": blob["sha"]}
               )
 
-          tree_entries.append(
-              {
-                  "path": ".github/workflows/materialize-saved-inventory-expander-main.yml",
-                  "mode": "100644",
-                  "type": "blob",
-                  "sha": None,
-              }
-          )
-
           tree = request(
               "POST",
               "/git/trees",
@@ -149,32 +117,21 @@ jobs:
               "POST",
               "/git/commits",
               {
-                  "message": "Collapse saved inventory by default",
+                  "message": "Materialize collapsed saved inventory section",
                   "tree": tree["sha"],
                   "parents": [parent_sha],
               },
           )
-
-          try:
-              request(
-                  "PATCH",
-                  f"/git/refs/heads/{target_branch}",
-                  {"sha": commit["sha"], "force": True},
-              )
-          except urllib.error.HTTPError as exc:
-              if exc.code != 404:
-                  raise
-              request(
-                  "POST",
-                  "/git/refs",
-                  {"ref": f"refs/heads/{target_branch}", "sha": commit["sha"]},
-              )
-
+          request(
+              "PATCH",
+              "/git/refs/heads/feat/collapsible-saved-inventory-v3",
+              {"sha": commit["sha"], "force": True},
+          )
           Path("/tmp/validated-commit-sha.txt").write_text(
               commit["sha"] + "\n",
               encoding="utf-8",
           )
-          print(f"Validated review branch: {target_branch}")
+          print(f"Validated branch: {target_branch}")
           print(f"Validated commit: {commit['sha']}")
           PY
 
@@ -182,7 +139,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: saved-inventory-validated-branch
+          name: saved-inventory-application-commit
           path: |
             /tmp/saved-inventory-validation.log
             /tmp/validated-commit-sha.txt
