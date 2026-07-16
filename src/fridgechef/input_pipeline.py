@@ -15,6 +15,8 @@ class PreparedImageInput:
     image_bytes: bytes
     mime_type: str
     caption: str
+    input_id: str = ""
+    filename: str = ""
 
 
 def build_incoming_inventory(
