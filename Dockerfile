@@ -14,9 +14,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . ./
 
-# Apply the deterministic UI patch during image creation so every container
-# receives the rear-camera and unique-widget-key fixes from the same source.
-RUN python scripts/apply_mobile_camera_fix.py
+# Apply deterministic, idempotent UI patches during image creation so every
+# runtime receives the same verified camera, widget-key and input behavior.
+RUN python scripts/apply_mobile_camera_fix.py \
+    && python -m scripts.patch_multi_input_state \
+    && python -m scripts.patch_additive_quantity_ui \
+    && python -m scripts.patch_multi_input_analysis \
+    && python -m scripts.patch_multi_input_tabs
 
 EXPOSE 8080
 
