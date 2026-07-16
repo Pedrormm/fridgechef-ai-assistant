@@ -5,6 +5,7 @@ OBSOLETE_WORKFLOWS = (
     Path(".github/workflows/materialize-production-resilience.yml"),
     Path(".github/workflows/diagnose-pr-tests.yml"),
     Path(".github/workflows/materialize-collapsible-ingredients.yml"),
+    Path(".github/workflows/materialize-brand-free-food-names.yml"),
 )
 
 
