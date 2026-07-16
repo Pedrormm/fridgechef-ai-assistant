@@ -61,6 +61,7 @@ from src.fridgechef.recipe_planner import clean_user_text, generate_recipes, sen
 from src.fridgechef.security import ImageValidationError, validate_image_upload
 from src.fridgechef.text_parser import ManualIngredientParseResult, parse_manual_ingredients
 from src.fridgechef.theme import build_theme_css, theme_label, theme_options
+from src.fridgechef.upload_input import read_uploaded_image
 from src.fridgechef.ui_keys import inventory_action_key
 from src.fridgechef.vision import analyze_image_bytes
 
@@ -232,6 +233,9 @@ def init_state() -> None:
         "manual_input_version": 0,
         "upload_widget_version": 0,
         "clear_consumed_inputs": False,
+        "consumed_input_ids": {},
+        "upload_notice": "",
+        "upload_error": "",
         "fridge_inventory": [],
         "last_analysis": None,
         "last_update": None,
@@ -426,62 +430,14 @@ def apply_app_style() -> None:
                 border-radius: 16px;
                 background: rgba(246, 247, 251, 0.88);
             }
+            [data-testid="stFileUploaderDropzone"] {
+                border-radius: 14px !important;
+            }
             [data-testid="stFileUploaderDropzone"] button,
-            [data-testid="stFileUploader"] button,
             [data-testid="stCameraInput"] button {
-                position: relative !important;
                 border-radius: 12px !important;
                 min-width: 8.7rem !important;
-                overflow: hidden !important;
-                font-size: 0 !important;
-                color: transparent !important;
-                font-weight: 400 !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                gap: 0.35rem !important;
-            }
-            [data-testid="stFileUploaderDropzone"] button *,
-            [data-testid="stFileUploader"] button *,
-            [data-testid="stCameraInput"] button * {
-                display: none !important;
-                font-size: 0 !important;
-                color: transparent !important;
-                font-weight: 400 !important;
-            }
-            [data-testid="stFileUploaderDropzone"] button::after,
-            [data-testid="stFileUploader"] button::after {
-                content: "{select_photo_text}";
-                font-size: 0.95rem !important;
-                font-weight: 400 !important;
-                color: #2d3142 !important;
-            }
-            [data-testid="stCameraInput"] button::after {
-                content: "{take_photo_text}";
-                font-size: 0.95rem !important;
-                font-weight: 400 !important;
-                color: #2d3142 !important;
-            }
-            [data-testid="stFileUploaderDropzone"] small,
-            [data-testid="stFileUploaderDropzone"] small *,
-            [data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderFileName"],
-            [data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderFileName"] *,
-            [data-testid="stFileUploaderDropzone"] > div:last-child,
-            [data-testid="stFileUploaderDropzone"] > div:last-child *,
-            [data-testid="stFileUploaderDropzone"] section + div,
-            [data-testid="stFileUploaderDropzone"] section + div * {
-                font-size: 0 !important;
-                color: transparent !important;
-            }
-            [data-testid="stFileUploaderDropzone"] small::after {
-                content: "{upload_limit_text}";
-                font-size: 0.86rem !important;
-                color: rgba(45, 49, 66, 0.58) !important;
-            }
-            [data-testid="stFileUploaderDropzone"] > div:last-child::after {
-                content: "{upload_drop_text}";
-                font-size: 0.9rem !important;
-                color: rgba(45, 49, 66, 0.62) !important;
+                font-weight: 600 !important;
             }
             [data-testid="stCameraInput"] p,
             [data-testid="stCameraInput"] a,
@@ -715,11 +671,20 @@ def show_clear_inventory_dialog(remember_fridge: bool) -> None:
             _confirm_content()
 
 
+def current_upload_widget_key() -> str:
+    """Return the current native uploader key used by Streamlit."""
+    version = int(st.session_state.get("upload_widget_version", 0))
+    return f"fridge_upload_{version}"
+
+
 def store_prepared_image(
     image_data: bytes,
     image_mime_type: str,
     caption: str,
     source: InputSource,
+    *,
+    input_id: str = "",
+    filename: str = "",
 ) -> None:
     """Keep one image per input channel so every prepared source can be analyzed."""
     prepared = dict(st.session_state.get("prepared_images", {}))
@@ -727,6 +692,8 @@ def store_prepared_image(
         "image_bytes": image_data,
         "mime_type": image_mime_type,
         "caption": caption,
+        "input_id": input_id,
+        "filename": filename,
     }
     st.session_state["prepared_images"] = prepared
 
@@ -741,6 +708,8 @@ def get_prepared_image(source: InputSource) -> PreparedImageInput | None:
         image_bytes=payload["image_bytes"],
         mime_type=str(payload.get("mime_type") or "image/jpeg"),
         caption=str(payload.get("caption") or "Foto preparada"),
+        input_id=str(payload.get("input_id") or ""),
+        filename=str(payload.get("filename") or ""),
     )
 
 
@@ -754,28 +723,100 @@ def get_prepared_images() -> list[PreparedImageInput]:
     return images
 
 
-def clear_prepared_image(source: InputSource) -> None:
+def clear_prepared_image(source: InputSource, *, reset_widget: bool = True) -> None:
     """Remove one image while preserving the remaining prepared inputs."""
     prepared = dict(st.session_state.get("prepared_images", {}))
     prepared.pop(source, None)
     st.session_state["prepared_images"] = prepared
     if source == "upload":
-        st.session_state["upload_widget_version"] = int(
-            st.session_state.get("upload_widget_version", 0)
-        ) + 1
+        st.session_state["upload_notice"] = ""
+        st.session_state["upload_error"] = ""
+        if reset_widget:
+            st.session_state["upload_widget_version"] = int(
+                st.session_state.get("upload_widget_version", 0)
+            ) + 1
+
+
+def prepare_uploaded_image(uploaded_file) -> bool:
+    """Validate and persist one native file-uploader value immediately."""
+    try:
+        uploaded_image = read_uploaded_image(uploaded_file)
+        if uploaded_image is None:
+            return False
+        validate_image_upload(
+            uploaded_image.image_bytes,
+            uploaded_image.mime_type,
+            settings.max_image_mb,
+        )
+    except ImageValidationError as exc:
+        clear_prepared_image("upload", reset_widget=False)
+        st.session_state["upload_error"] = str(exc)
+        return False
+    except Exception:
+        clear_prepared_image("upload", reset_widget=False)
+        st.session_state["upload_error"] = (
+            "No he podido preparar esta foto. Prueba con otra imagen JPG, PNG o WEBP."
+        )
+        return False
+
+    current = get_prepared_image("upload")
+    if current is None or current.input_id != uploaded_image.upload_id:
+        store_prepared_image(
+            uploaded_image.image_bytes,
+            uploaded_image.mime_type,
+            "Foto subida",
+            "upload",
+            input_id=uploaded_image.upload_id,
+            filename=uploaded_image.filename,
+        )
+    st.session_state["upload_error"] = ""
+    st.session_state["upload_notice"] = (
+        f"Foto preparada correctamente: {uploaded_image.filename}."
+    )
+    return True
+
+
+def prepare_uploaded_image_from_widget(widget_key: str) -> None:
+    """Copy the selected file during Streamlit's on-change callback."""
+    uploaded_file = st.session_state.get(widget_key)
+    if uploaded_file is None:
+        clear_prepared_image("upload", reset_widget=False)
+        return
+    prepare_uploaded_image(uploaded_file)
+
+
+def mark_prepared_images_consumed(images: list[PreparedImageInput]) -> None:
+    """Remember which prepared inputs were used by the completed action."""
+    st.session_state["consumed_input_ids"] = {
+        image.source: image.input_id
+        for image in images
+        if image.input_id
+    }
 
 
 def reset_consumed_inputs_if_needed() -> None:
-    """Clear persisted inputs on the next rerun to prevent accidental double counting."""
+    """Clear consumed inputs without discarding a newly selected upload event."""
     if not st.session_state.get("clear_consumed_inputs"):
         return
-    st.session_state["prepared_images"] = {}
+
+    prepared = dict(st.session_state.get("prepared_images", {}))
+    consumed = dict(st.session_state.get("consumed_input_ids", {}))
+    preserved: dict[str, dict] = {}
+    for source, payload in prepared.items():
+        if not isinstance(payload, dict):
+            continue
+        input_id = str(payload.get("input_id") or "")
+        if input_id and input_id != str(consumed.get(source) or ""):
+            preserved[source] = payload
+
+    st.session_state["prepared_images"] = preserved
     st.session_state["manual_input_version"] = int(
         st.session_state.get("manual_input_version", 0)
     ) + 1
     st.session_state["upload_widget_version"] = int(
         st.session_state.get("upload_widget_version", 0)
     ) + 1
+    st.session_state["consumed_input_ids"] = {}
     st.session_state["clear_consumed_inputs"] = False
 
 
@@ -793,7 +834,15 @@ def capture_internal_camera_with_feedback() -> None:
             status.write(t("Comprobando que la foto se ha guardado correctamente."))
             image_bytes = Path(output).read_bytes()
             validate_image_upload(image_bytes, "image/jpeg", settings.max_image_mb)
-            store_prepared_image(image_bytes, "image/jpeg", "Foto de cámara interna", "internal_camera")
+            internal_input_id = f"blink:{Path(output).stat().st_mtime_ns}:{len(image_bytes)}"
+            store_prepared_image(
+                image_bytes,
+                "image/jpeg",
+                "Foto de cámara interna",
+                "internal_camera",
+                input_id=internal_input_id,
+                filename=Path(output).name,
+            )
             status.update(label=t("Foto realizada"), state="complete", expanded=False)
             st.success("Foto realizada correctamente.")
         except Exception as exc:
@@ -1644,6 +1693,7 @@ def analyze_current_inputs(
         existing_inventory = get_inventory()
         update_result = apply_inventory_update(existing_inventory, incoming_items, update_mode)
         set_inventory(update_result.inventory, persist=True)
+        mark_prepared_images_consumed(images)
         st.session_state["clear_consumed_inputs"] = True
         session_id = save_session_if_allowed(
             {
@@ -1801,20 +1851,27 @@ with tabs[0]:
         )
 
 with tabs[1]:
+    upload_key = current_upload_widget_key()
     uploaded = st.file_uploader(
         "Sube una foto de alimentos (JPG, PNG o WEBP)",
         type=["jpg", "jpeg", "png", "webp"],
-        key=f"fridge_upload_{st.session_state.get('upload_widget_version', 0)}",
+        key=upload_key,
         max_upload_size=settings.max_image_mb,
+        on_change=prepare_uploaded_image_from_widget,
+        args=(upload_key,),
     )
-    if uploaded:
-        image_bytes = uploaded.getvalue()
-        mime_type = uploaded.type or mimetypes.guess_type(uploaded.name)[0] or "image/jpeg"
-        validate_image_upload(image_bytes, mime_type, settings.max_image_mb)
-        store_prepared_image(image_bytes, mime_type, "Foto subida", "upload")
+    if uploaded is not None:
+        # The callback is the primary path. This fallback also covers browser or
+        # Streamlit versions that restore the widget value without firing it.
+        prepare_uploaded_image(uploaded)
+
+    if st.session_state.get("upload_error"):
+        st.error(st.session_state["upload_error"], __skip_i18n=True)
 
     upload_image = get_prepared_image("upload")
     if upload_image:
+        notice = st.session_state.get("upload_notice") or "Foto preparada correctamente."
+        st.success(notice, __skip_i18n=True)
         st.image(upload_image.image_bytes, caption="Foto preparada", use_container_width=True)
         if st.button("Quitar foto subida", key="clear_upload_photo", use_container_width=True):
             clear_prepared_image("upload")
@@ -1858,6 +1915,8 @@ if "Cámara del dispositivo" in available_tabs:
                         device_capture.mime_type,
                         "Foto del dispositivo",
                         "device_camera",
+                        input_id=device_capture.capture_id,
+                        filename="device-camera.jpg",
                     )
                     st.session_state["last_device_camera_capture_id"] = device_capture.capture_id
                     st.success("Foto realizada correctamente.")
