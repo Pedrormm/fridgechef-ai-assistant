@@ -22,7 +22,8 @@ RUN python scripts/apply_mobile_camera_fix.py \
     && python -m scripts.patch_additive_quantity_ui \
     && python -m scripts.patch_multi_input_analysis \
     && python -m scripts.patch_multi_input_tabs \
-    && python -m scripts.patch_replace_semantics
+    && python -m scripts.patch_replace_semantics \
+    && python -m scripts.patch_multi_input_messages
 
 EXPOSE 8080
 
