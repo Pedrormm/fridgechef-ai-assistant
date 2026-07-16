@@ -16,6 +16,17 @@ def test_add_mode_sums_existing_countable_items():
     assert result.quantity_changes[0].resulting_quantity_label == "5 unidades"
 
 
+def test_singular_and_plural_food_names_share_one_saved_quantity():
+    existing = [InventoryItem(name="Naranja", normalized_name="naranja", quantity_label="5 unidades")]
+    incoming = [InventoryItem(name="naranjas", normalized_name="naranjas", quantity_label="3 unidades")]
+
+    result = apply_inventory_update(existing, incoming, mode="add")
+
+    assert len(result.inventory) == 1
+    assert result.inventory[0].normalized_name == "naranja"
+    assert result.inventory[0].quantity_label == "8 unidades"
+
+
 def test_add_mode_treats_an_unspecified_saved_quantity_as_one_unit():
     existing = [InventoryItem(name="Patatas", normalized_name="patatas", quantity_label="Cantidad no indicada")]
     incoming = [InventoryItem(name="patatas", normalized_name="patatas", quantity_label="2 unidades")]
