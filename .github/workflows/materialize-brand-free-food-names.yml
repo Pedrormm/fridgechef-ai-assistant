@@ -1,0 +1,59 @@
+name: Materialize brand-free food normalization
+
+on:
+  push:
+    branches:
+      - feat/brand-free-food-normalization
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-test-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Materialize deterministic source changes
+        run: python -m scripts.patch_brand_free_food_names
+
+      - name: Remove one-time materialization workflow
+        run: rm .github/workflows/materialize-brand-free-food-names.yml
+
+      - name: Commit materialized source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streamlit_app/app.py
+          git add src/fridgechef/inventory.py
+          git add src/fridgechef/recipe_planner.py
+          git add src/fridgechef/vision.py
+          git add src/fridgechef/text_parser.py
+          git add .github/workflows/apply-additive-multi-input.yml
+          git add -u .github/workflows/materialize-brand-free-food-names.yml
+          git commit -m "Materialize brand-free food normalization flow"
+          git push
+
+      - name: Install dependencies
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Validate Python source
+        run: python -m compileall -q src streamlit_app tests scripts
+
+      - name: Validate browser components
+        run: |
+          node --check src/fridgechef/components/rear_camera/main.js
+          node --check src/fridgechef/components/mobile_upload/main.js
