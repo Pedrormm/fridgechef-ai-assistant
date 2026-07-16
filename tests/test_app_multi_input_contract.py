@@ -46,9 +46,12 @@ def test_previous_mobile_and_widget_key_fixes_are_preserved():
     assert "inventory_action_key" in source
 
 
-def test_generate_flow_does_not_render_detected_inventory_again():
+def test_generate_flow_renders_recipes_without_detected_food_feedback():
     source = _app_source()
     generate_block = source.split("if recipes_clicked:", 1)[1]
 
     assert "show_recipes(response, profile" in generate_block
     assert 'title="Alimentos detectados"' not in generate_block
+    final_result_block = generate_block.split("if result:", 1)[1]
+    assert "show_manual_feedback" not in final_result_block
+    assert "show_inventory_update" not in final_result_block

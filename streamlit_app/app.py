@@ -2035,8 +2035,5 @@ if recipes_clicked:
             _generate,
         )
         if result:
-            parse_result, update_result, response = result
-            show_manual_feedback(parse_result)
-            if update_result and remember_fridge:
-                show_inventory_update(update_result)
+            _, _, response = result
             show_recipes(response, profile, show_images=generate_recipe_images)
