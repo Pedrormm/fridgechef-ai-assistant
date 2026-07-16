@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>FridgeChef rear camera</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script defer src="./streamlit-component-lib.js"></script>
+    <script defer src="./main.js"></script>
+  </head>
+  <body>
+    <section class="camera-shell" aria-label="Cámara del dispositivo">
+      <div class="preview-wrap">
+        <video id="camera-preview" autoplay muted playsinline></video>
+        <div id="camera-status" class="camera-status" role="status" aria-live="polite"></div>
+      </div>
+      <canvas id="camera-canvas" hidden></canvas>
+      <div class="camera-controls">
+        <button id="capture-button" class="primary" type="button" disabled>Hacer foto</button>
+        <button id="switch-button" class="secondary" type="button">Cambiar cámara</button>
+      </div>
+    </section>
+  </body>
+</html>
