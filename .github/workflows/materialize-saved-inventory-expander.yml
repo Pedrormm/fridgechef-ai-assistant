@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/collapsible-saved-inventory
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -64,7 +67,7 @@ jobs:
           from pathlib import Path
 
           repository = os.environ["GITHUB_REPOSITORY"]
-          branch = os.environ["GITHUB_REF_NAME"]
+          branch = os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"]
           token = os.environ["GH_TOKEN"]
           api_root = f"https://api.github.com/repos/{repository}"
 
