@@ -1,10 +1,3 @@
-...........F............................................................ [ 57%]
+........................................................................ [ 57%]
 ......................................................                   [100%]
-=================================== FAILURES ===================================
-______ test_generate_flow_renders_recipes_without_detected_food_feedback _______
-tests/test_app_multi_input_contract.py:82: in test_generate_flow_renders_recipes_without_detected_food_feedback
-    assert "show_recipes(response, profile" in generate_block
-E   assert 'show_recipes(response, profile' in '\n    if not has_available_input:\n        st.warning("No es posible generar recetas si no se ha introducido ningún a...       profile,\n            show_images=bool(st.session_state.get("last_recipe_images_enabled", False)),\n        )\n'
-=========================== short test summary info ============================
-FAILED tests/test_app_multi_input_contract.py::test_generate_flow_renders_recipes_without_detected_food_feedback - assert 'show_recipes(response, profile' in '\n    if not has_available_input:\n        st.warning("No es posible generar recetas si no se ha introducido ningún a...       profile,\n            show_images=bool(st.session_state.get("last_recipe_images_enabled", False)),\n        )\n'
-1 failed, 125 passed in 3.25s
+126 passed in 3.17s
