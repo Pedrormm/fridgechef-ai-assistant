@@ -13,6 +13,10 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT))
 
+from src.fridgechef.action_results import (
+    restore_manual_parse_result,
+    snapshot_manual_parse_result,
+)
 from src.fridgechef.app_preferences import (
     load_visual_theme_preference,
     save_visual_theme_preference,
@@ -249,7 +253,11 @@ def init_state() -> None:
         "fridge_inventory": [],
         "last_analysis": None,
         "last_update": None,
+        "last_manual_parse_result": None,
         "last_recipes": None,
+        "last_recipe_images_enabled": False,
+        "show_last_analysis_once": False,
+        "show_last_recipes_once": False,
         "inventory_clear_message": "",
         "inventory_action_message": None,
         "inventory_persistence_backend": "",
@@ -649,7 +657,7 @@ def show_clear_inventory_dialog(remember_fridge: bool) -> None:
         if already_empty:
             st.markdown("### " + t("La nevera guardada ya está vacía"))
             st.write(t("Ahora mismo no hay alimentos guardados que borrar."))
-            if st.button(t("Entendido"), type="primary", use_container_width=True):
+            if st.button(t("Entendido"), type="primary", width="stretch"):
                 st.session_state["inventory_clear_message"] = clear_inventory(remember_fridge)
                 st.rerun()
             return
@@ -663,10 +671,10 @@ def show_clear_inventory_dialog(remember_fridge: bool) -> None:
         )
         col_cancel, col_confirm = st.columns(2)
         with col_cancel:
-            if st.button(t("Cancelar"), use_container_width=True):
+            if st.button(t("Cancelar"), width="stretch"):
                 st.rerun()
         with col_confirm:
-            if st.button(t("Sí, vaciar la lista"), type="primary", use_container_width=True):
+            if st.button(t("Sí, vaciar la lista"), type="primary", width="stretch"):
                 st.session_state["inventory_clear_message"] = clear_inventory(remember_fridge)
                 st.rerun()
 
@@ -1303,7 +1311,7 @@ def show_edit_inventory_dialog(item_key: str) -> None:
         index = _find_inventory_index(item_key)
         if index is None:
             st.warning("Ese alimento ya no está en la nevera guardada.")
-            if st.button("Entendido", type="primary", use_container_width=True):
+            if st.button("Entendido", type="primary", width="stretch"):
                 st.rerun()
             return
 
@@ -1337,10 +1345,10 @@ def show_edit_inventory_dialog(item_key: str) -> None:
 
         col_cancel, col_save = st.columns(2)
         with col_cancel:
-            if st.button("Cancelar", key=f"cancel_edit_{base_key}", use_container_width=True):
+            if st.button("Cancelar", key=f"cancel_edit_{base_key}", width="stretch"):
                 st.rerun()
         with col_save:
-            save_clicked = st.button("Guardar cambios", key=f"save_edit_{base_key}", type="primary", use_container_width=True)
+            save_clicked = st.button("Guardar cambios", key=f"save_edit_{base_key}", type="primary", width="stretch")
 
         if not save_clicked:
             return
@@ -1401,7 +1409,7 @@ def show_delete_inventory_dialog(item_key: str) -> None:
         index = _find_inventory_index(item_key)
         if index is None:
             st.warning("Ese alimento ya se ha eliminado de la nevera guardada.")
-            if st.button("Entendido", type="primary", use_container_width=True):
+            if st.button("Entendido", type="primary", width="stretch"):
                 st.rerun()
             return
 
@@ -1411,10 +1419,10 @@ def show_delete_inventory_dialog(item_key: str) -> None:
         st.caption("Esta acción solo elimina este alimento de la lista guardada.")
         col_cancel, col_delete = st.columns(2)
         with col_cancel:
-            if st.button("Cancelar", key=f"cancel_delete_{base_key}", use_container_width=True):
+            if st.button("Cancelar", key=f"cancel_delete_{base_key}", width="stretch"):
                 st.rerun()
         with col_delete:
-            if st.button("Sí, eliminar el alimento", key=f"confirm_delete_{base_key}", type="primary", use_container_width=True):
+            if st.button("Sí, eliminar el alimento", key=f"confirm_delete_{base_key}", type="primary", width="stretch"):
                 removed = _delete_inventory_item(index)
                 if removed is None:
                     _inventory_message("Ese alimento ya no estaba en la nevera guardada.", "warning")
@@ -1458,10 +1466,10 @@ def show_inventory(
                     with title_col:
                         st.markdown(f"#### {sentence_case(item.name)}")
                     with edit_col:
-                        if st.button("✏️", key=inventory_action_key(key_scope, "edit", base_key, index), help="Editar alimento", use_container_width=True):
+                        if st.button("✏️", key=inventory_action_key(key_scope, "edit", base_key, index), help="Editar alimento", width="stretch"):
                             show_edit_inventory_dialog(item_key)
                     with delete_col:
-                        if st.button("🗑️", key=inventory_action_key(key_scope, "delete", base_key, index), help="Eliminar alimento", use_container_width=True):
+                        if st.button("🗑️", key=inventory_action_key(key_scope, "delete", base_key, index), help="Eliminar alimento", width="stretch"):
                             show_delete_inventory_dialog(item_key)
                 else:
                     st.markdown(f"#### {sentence_case(item.name)}")
@@ -1615,7 +1623,7 @@ def show_recipes(response: RecipeResponse, profile: UserProfile, show_images: bo
             recipe_image = _decode_recipe_image(recipe) if show_images else None
             if recipe_image:
                 st.markdown("### Imagen de la receta")
-                st.image(recipe_image, caption="Imagen generada para esta receta", use_container_width=True)
+                st.image(recipe_image, caption="Imagen generada para esta receta", width="stretch")
             elif show_images and getattr(recipe, "image_generation_error", ""):
                 st.caption(clean_user_text(recipe.image_generation_error))
 
@@ -1945,8 +1953,8 @@ with tabs[1]:
     if upload_image:
         notice = st.session_state.get("upload_notice") or "Foto preparada correctamente."
         st.success(notice, __skip_i18n=True)
-        st.image(upload_image.image_bytes, caption="Foto preparada", use_container_width=True)
-        if st.button("Quitar foto subida", key="clear_upload_photo", use_container_width=True):
+        st.image(upload_image.image_bytes, caption="Foto preparada", width="stretch")
+        if st.button("Quitar foto subida", key="clear_upload_photo", width="stretch"):
             clear_prepared_image("upload")
             st.rerun()
 
@@ -2003,11 +2011,11 @@ if "Cámara del dispositivo" in available_tabs:
 
         device_image = get_prepared_image("device_camera")
         if device_image:
-            st.image(device_image.image_bytes, caption="Foto preparada", use_container_width=True)
+            st.image(device_image.image_bytes, caption="Foto preparada", width="stretch")
             if st.button(
                 "Quitar foto del dispositivo",
                 key="clear_device_photo",
-                use_container_width=True,
+                width="stretch",
             ):
                 clear_prepared_image("device_camera")
                 st.rerun()
@@ -2020,11 +2028,11 @@ with tabs[current_tab_index]:
 
     internal_image = get_prepared_image("internal_camera")
     if internal_image:
-        st.image(internal_image.image_bytes, caption="Foto preparada", use_container_width=True)
+        st.image(internal_image.image_bytes, caption="Foto preparada", width="stretch")
         if st.button(
             "Quitar foto de la cámara interna",
             key="clear_internal_photo",
-            use_container_width=True,
+            width="stretch",
         ):
             clear_prepared_image("internal_camera")
             st.rerun()
@@ -2057,17 +2065,17 @@ if remember_fridge:
 
 button_columns = st.columns([1, 1, 1])
 with button_columns[0]:
-    analyze_clicked = st.button("🔎 Analizar nevera", type="primary", use_container_width=True)
+    analyze_clicked = st.button("🔎 Analizar nevera", type="primary", width="stretch")
 
 if remember_fridge:
     with button_columns[1]:
-        recipes_clicked = st.button("🍳 Generar recetas", type="secondary", use_container_width=True)
+        recipes_clicked = st.button("🍳 Generar recetas", type="secondary", width="stretch")
     with button_columns[2]:
-        clear_clicked = st.button("🧹 Vaciar nevera guardada", type="secondary", use_container_width=True)
+        clear_clicked = st.button("🧹 Vaciar nevera guardada", type="secondary", width="stretch")
 else:
     clear_clicked = False
     with button_columns[2]:
-        recipes_clicked = st.button("🍳 Generar recetas", type="secondary", use_container_width=True)
+        recipes_clicked = st.button("🍳 Generar recetas", type="secondary", width="stretch")
 
 if clear_clicked:
     show_clear_inventory_dialog(remember_fridge)
@@ -2102,19 +2110,11 @@ if analyze_clicked:
             ),
         )
         if result:
-            _, update_result, parse_result = result
-            show_manual_feedback(parse_result)
-            if update_result:
-                show_inventory_update(update_result)
-                show_inventory(update_result.inventory, title="Alimentos detectados")
-            elif remember_fridge and get_inventory():
-                st.info("No se han introducido alimentos nuevos. Mantengo la nevera guardada tal como estaba.")
-                show_inventory(
-                    get_inventory(),
-                    title="Alimentos guardados actualmente",
-                    editable=True,
-                    widget_namespace="saved_inventory_analysis_result",
-                )
+            _, _, parse_result = result
+            # Rerun once so the saved inventory rendered above reflects the atomic update.
+            st.session_state["last_manual_parse_result"] = snapshot_manual_parse_result(parse_result)
+            st.session_state["show_last_analysis_once"] = True
+            st.rerun()
 
 if recipes_clicked:
     if not has_available_input:
@@ -2149,6 +2149,8 @@ if recipes_clicked:
                 image_progress_callback=_image_progress,
             )
             st.session_state["last_recipes"] = response.model_dump()
+            st.session_state["last_recipe_images_enabled"] = bool(generate_recipe_images)
+            st.session_state["show_last_recipes_once"] = True
             return parse_result, update_result, response
 
         recipe_steps = [
@@ -2167,5 +2169,39 @@ if recipes_clicked:
             _generate,
         )
         if result:
-            _, _, response = result
-            show_recipes(response, profile, show_images=generate_recipe_images)
+            # Rerun once so the top saved-inventory section is refreshed before recipes.
+            st.rerun()
+
+# Replay successful actions after the refresh without repeating any model calls.
+if st.session_state.get("show_last_analysis_once", False):
+    st.session_state["show_last_analysis_once"] = False
+    parse_result = restore_manual_parse_result(
+        st.session_state.get("last_manual_parse_result")
+    )
+    if parse_result is not None:
+        show_manual_feedback(parse_result)
+
+    update_payload = st.session_state.get("last_update")
+    if isinstance(update_payload, dict):
+        restored_update = InventoryUpdateResult.model_validate(update_payload)
+        show_inventory_update(restored_update)
+        show_inventory(restored_update.inventory, title="Alimentos detectados")
+    elif remember_fridge and get_inventory():
+        st.info("No se han introducido alimentos nuevos. Mantengo la nevera guardada tal como estaba.")
+        show_inventory(
+            get_inventory(),
+            title="Alimentos guardados actualmente",
+            editable=True,
+            widget_namespace="saved_inventory_analysis_result",
+        )
+
+if st.session_state.get("show_last_recipes_once", False):
+    st.session_state["show_last_recipes_once"] = False
+    recipe_payload = st.session_state.get("last_recipes")
+    if isinstance(recipe_payload, dict):
+        restored_response = RecipeResponse.model_validate(recipe_payload)
+        show_recipes(
+            restored_response,
+            profile,
+            show_images=bool(st.session_state.get("last_recipe_images_enabled", False)),
+        )

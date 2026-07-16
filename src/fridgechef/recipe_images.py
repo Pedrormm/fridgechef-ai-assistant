@@ -33,11 +33,12 @@ except Exception:  # pragma: no cover - image REST fallback is optional in local
 
 from src.fridgechef.config import get_settings
 from src.fridgechef.llm_client import get_client
+from src.fridgechef.local_recipe_image import generate_local_recipe_image
 from src.fridgechef.models import RecipeItem, RecipeResponse, UserProfile
 from src.fridgechef.recipe_planner import clean_user_text, sentence_case
 
 
-DEFAULT_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 DEFAULT_IMAGEN_MODEL = "imagen-4.0-generate-001"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _IMAGE_CACHE_LOCK = threading.Lock()
@@ -459,55 +460,52 @@ def _generate_image_with_interactions(prompt: str, model_name: str, image_locati
 
 
 def _ordered_image_models(settings) -> list[str]:
-    explicit = [getattr(settings, "image_model_name", "")]
-    fallbacks = [part.strip() for part in getattr(settings, "image_fallback_models", "").split(",") if part.strip()]
-    if not fallbacks:
-        fallbacks = [DEFAULT_GEMINI_IMAGE_MODEL, getattr(settings, "imagen_model_name", DEFAULT_IMAGEN_MODEL), "imagen-3.0-generate-002"]
+    """Use only current Gemini image endpoints and ignore retired Imagen models."""
+    configured = [getattr(settings, "image_model_name", "")]
+    configured.extend(
+        part.strip()
+        for part in getattr(settings, "image_fallback_models", "").split(",")
+        if part.strip()
+    )
+    configured.extend([DEFAULT_GEMINI_IMAGE_MODEL, "gemini-2.5-flash-image"])
+
     models: list[str] = []
-    for model in explicit + fallbacks:
-        if model and model not in models:
-            models.append(model)
+    for model_name in configured:
+        clean = str(model_name or "").strip()
+        if not clean.startswith("gemini-") or "image" not in clean:
+            continue
+        if clean not in models:
+            models.append(clean)
     return models
 
-
 def _try_generate_image(prompt: str, settings) -> tuple[bytes, str, str]:
+    """Try current Gemini image models through the retry-enabled global endpoint."""
     errors: list[str] = []
-    location = getattr(settings, "image_location", "global") or "global"
+    location = "global"
 
     for model_name in _ordered_image_models(settings):
-        is_gemini_image = model_name.startswith("gemini-") and "image" in model_name
-        if is_gemini_image:
-            for strategy_name, strategy in (
-                ("gemini-generate-content", _generate_image_with_gemini_content),
-                ("gemini-interactions", _generate_image_with_interactions),
-            ):
-                try:
-                    image_bytes, mime_type = strategy(prompt, model_name, location, settings)
-                    if image_bytes:
-                        return image_bytes, mime_type, model_name
-                except Exception as exc:
-                    errors.append(f"{strategy_name} {model_name}: {exc}")
-                    _LOGGER.warning("Recipe image generation failed with %s %s: %s", strategy_name, model_name, exc)
-            continue
-
         try:
-            image_bytes, mime_type = _generate_image_with_imagen_sdk(prompt, model_name, location, settings)
+            image_bytes, mime_type = _generate_image_with_gemini_content(
+                prompt,
+                model_name,
+                location,
+                settings,
+            )
             if image_bytes:
                 return image_bytes, mime_type, model_name
         except Exception as exc:
-            errors.append(f"imagen-sdk {model_name}: {exc}")
-            _LOGGER.warning("Recipe image generation failed with Imagen SDK %s: %s", model_name, exc)
+            summary = " ".join(str(exc).split())[:280]
+            errors.append(f"{model_name}: {type(exc).__name__}: {summary}")
+            _LOGGER.warning(
+                "Recipe image cloud attempt failed for %s: %s: %s",
+                model_name,
+                type(exc).__name__,
+                summary,
+            )
 
-        try:
-            image_bytes, mime_type = _generate_image_with_imagen_rest(prompt, model_name, location)
-            if image_bytes:
-                return image_bytes, mime_type, model_name
-        except Exception as exc:
-            errors.append(f"imagen-rest {model_name}: {exc}")
-            _LOGGER.warning("Recipe image generation failed with Imagen REST %s: %s", model_name, exc)
-
-    raise RecipeImageGenerationError(" | ".join(errors) or "No se ha podido crear la imagen con ningún modelo configurado.")
-
+    raise RecipeImageGenerationError(
+        " | ".join(errors) or "No current Gemini image model completed the request."
+    )
 
 def generate_recipe_image(recipe: RecipeItem, profile: UserProfile, use_cache: bool = True) -> RecipeItem:
     settings = get_settings()
@@ -534,13 +532,15 @@ def generate_recipe_image(recipe: RecipeItem, profile: UserProfile, use_cache: b
     try:
         image_bytes, mime_type, used_model = _try_generate_image(prompt, settings)
     except Exception as exc:
-        _LOGGER.exception("No se ha podido generar la imagen de receta '%s': %s", recipe.title, exc)
-        return recipe.model_copy(
-            update={
-                "image_prompt": prompt,
-                "image_generation_error": "No se ha podido generar la imagen de esta receta ahora mismo.",
-            }
+        # A local card keeps the one-image-per-recipe contract during cloud outages.
+        summary = " ".join(str(exc).split())[:280]
+        _LOGGER.warning(
+            "Cloud recipe image unavailable for '%s'; using local fallback: %s",
+            recipe.title,
+            summary,
         )
+        image_bytes, mime_type = generate_local_recipe_image(recipe)
+        used_model = "local-recipe-card-v1"
 
     image_mime_type = mime_type or "image/png"
     image_base64 = base64.b64encode(image_bytes).decode("ascii")
