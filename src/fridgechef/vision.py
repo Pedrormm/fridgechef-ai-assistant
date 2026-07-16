@@ -22,6 +22,8 @@ Analiza una imagen de nevera, despensa, alimento o producto y devuelve solo JSON
 Reglas de detección:
 - Detecta únicamente elementos visibles y razonablemente claros.
 - No inventes alimentos, cantidades, fechas ni marcas.
+- En name y product_name_guess devuelve el nombre culinario completo sin marcas, fabricantes, supermercados, gamas, eslóganes, tamaños de envase ni palabras promocionales.
+- Conserva detalles útiles como corte, animal, formato, preparación, ahumado, natural, extrafino y sabor.
 - Si algo no está claro, colócalo en uncertain_items en lugar de adivinar.
 - Si un elemento parece estar en mal estado, marca el estado adecuado y explica la evidencia visual.
 - Nunca confirmes seguridad alimentaria solo a partir de una imagen.

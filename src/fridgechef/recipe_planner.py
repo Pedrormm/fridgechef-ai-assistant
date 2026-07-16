@@ -16,6 +16,7 @@ from src.fridgechef.availability import (
     unique_clean,
 )
 from src.fridgechef.config import get_settings
+from src.fridgechef.food_name_normalizer import sanitize_recipe_response
 from src.fridgechef.json_utils import extract_json_object
 from src.fridgechef.llm_client import get_client
 from src.fridgechef.models import FridgeAnalysis, RecipeItem, RecipeResponse, UserProfile
@@ -38,6 +39,8 @@ Internal workflow to follow:
 Strict rules:
 - Do not invent available ingredients.
 - ingredients_used must only contain items from AVAILABLE INGREDIENTS.
+- Never include brands, manufacturers, supermarkets, product ranges, slogans or packaging claims in recipe titles, descriptions, ingredients, steps or shopping lists.
+- AVAILABLE INGREDIENTS are culinary names; keep their useful food descriptors but do not reintroduce commercial wording.
 - Do not use risky or possibly spoiled items.
 - Respect the user's allergies, intolerances, diet, dislikes and custom preferences by semantic reasoning.
 - Each recipe must include a short description, useful recipe information, ingredients and clear ordered steps.
@@ -378,6 +381,10 @@ def generate_recipes(
     except Exception:
         recipe_response = _local_recipe_fallback(readiness, profile)
 
+    # Final output callback removes any commercial token the model could
+    # have echoed despite receiving brand-free input. This runs before the
+    # availability guard so ingredient comparisons use the same canonical names.
+    recipe_response = sanitize_recipe_response(recipe_response)
     recipe_response, availability_warnings = remove_invalid_recipes(recipe_response, readiness.usable_ingredients)
     if availability_warnings and not recipe_response.recipes:
         fallback = build_no_recipe_response(readiness)

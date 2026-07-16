@@ -26,6 +26,10 @@ from src.fridgechef.config import get_settings
 from src.fridgechef.device_camera import rear_camera_input
 from src.fridgechef.mobile_upload import mobile_image_upload
 from src.fridgechef.fridge_qa import answer_fridge_question
+from src.fridgechef.food_name_normalizer import (
+    sanitize_action_inputs,
+    sanitize_inventory_items,
+)
 from src.fridgechef.input_pipeline import (
     PreparedImageInput,
     build_incoming_inventory,
@@ -41,6 +45,7 @@ from src.fridgechef.i18n import (
 )
 from src.fridgechef.inventory import (
     apply_inventory_update,
+    consolidate_inventory,
     friendly_state_label,
     inventory_from_inputs,
     inventory_to_recipe_ingredients,
@@ -270,8 +275,18 @@ def init_state() -> None:
 
     if is_new_browser_session and settings.allow_chat_persistence:
         result = load_inventory_state()
-        st.session_state["fridge_inventory"] = result.inventory
-        _store_persistence_result(result)
+        loaded_items = [InventoryItem.model_validate(item) for item in result.inventory]
+        cleaned_items, _ = sanitize_inventory_items(loaded_items)
+        cleaned_items = consolidate_inventory(cleaned_items, quantity_mode="max")
+        cleaned_payload = [item.model_dump() for item in cleaned_items]
+        st.session_state["fridge_inventory"] = cleaned_payload
+
+        # Migrate legacy branded rows once. The normalizer caches decisions in the
+        # same SQLite database, so later browser sessions do not consume quota.
+        if cleaned_payload != result.inventory:
+            _store_persistence_result(save_inventory_state(cleaned_payload))
+        else:
+            _store_persistence_result(result)
 
 
 def apply_app_style() -> None:
@@ -1684,6 +1699,14 @@ def analyze_current_inputs(
                 "No he cambiado la nevera guardada. Vuelve a intentarlo en unos segundos."
             ) from exc
         image_results.append((prepared_image.source, image_analysis))
+
+    # Run the dedicated commercial-name sub-agent once for the complete
+    # action batch. Both Analyze and Generate Recipes use this function, so text,
+    # uploaded photos and camera photos follow the same validated normalization.
+    parse_result, image_results, _ = sanitize_action_inputs(
+        parse_result,
+        image_results,
+    )
 
     incoming_items = build_incoming_inventory(
         parse_result.accepted_items,

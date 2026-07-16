@@ -243,6 +243,8 @@ Reglas:
 - Evalúa todos los fragmentos de forma conjunta.
 - Conserva la cantidad de cada alimento.
 - Conserva el estado indicado por el usuario.
+- Devuelve el nombre culinario completo sin marcas, fabricantes, supermercados, gamas comerciales, eslóganes, tamaños de envase ni palabras promocionales.
+- Conserva detalles útiles como corte, animal, formato, preparación, ahumado, natural, extrafino y sabor.
 - Separa el estado del nombre: "5 tomates podridos" debe producir nombre "tomates", cantidad "5 unidades" y estado "spoiled".
 - Rechaza objetos, comentarios, bromas, nombres propios y referencias culturales aunque contengan el nombre de un animal o alimento.
 - "El pulpo Paul" es una referencia cultural y no un ingrediente disponible.
