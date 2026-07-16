@@ -15,6 +15,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.fridgechef.blink_camera import capture_blink_photo_sync
 from src.fridgechef.config import get_settings
+from src.fridgechef.device_camera import rear_camera_input
 from src.fridgechef.fridge_qa import answer_fridge_question
 from src.fridgechef.i18n import (
     install_streamlit_i18n,
@@ -51,6 +52,7 @@ from src.fridgechef.recipe_planner import clean_user_text, generate_recipes, sen
 from src.fridgechef.security import ImageValidationError, validate_image_upload
 from src.fridgechef.text_parser import ManualIngredientParseResult, parse_manual_ingredients
 from src.fridgechef.theme import build_theme_css, theme_label, theme_options
+from src.fridgechef.ui_keys import inventory_action_key
 from src.fridgechef.vision import analyze_image_bytes
 
 settings = get_settings()
@@ -1307,13 +1309,19 @@ def show_delete_inventory_dialog(item_key: str) -> None:
             _content()
 
 
-def show_inventory(inventory: list[InventoryItem], title: str = "Alimentos guardados", editable: bool = False) -> None:
-    """Display the fridge inventory as friendly cards, optionally with edit/delete actions."""
+def show_inventory(
+    inventory: list[InventoryItem],
+    title: str = "Alimentos guardados",
+    editable: bool = False,
+    widget_namespace: str | None = None,
+) -> None:
+    """Display inventory cards with widget keys scoped to this rendered section."""
     st.subheader(title)
     if not inventory:
         st.info("Todavía no hay alimentos guardados. Escribe ingredientes o sube una foto para empezar.")
         return
 
+    key_scope = _selector_key(widget_namespace or f"{title}_{'editable' if editable else 'readonly'}")
     columns = st.columns(2)
     for index, item in enumerate(inventory):
         with columns[index % 2]:
@@ -1325,10 +1333,10 @@ def show_inventory(inventory: list[InventoryItem], title: str = "Alimentos guard
                     with title_col:
                         st.markdown(f"#### {sentence_case(item.name)}")
                     with edit_col:
-                        if st.button("✏️", key=f"edit_inventory_{base_key}", help="Editar alimento", use_container_width=True):
+                        if st.button("✏️", key=inventory_action_key(key_scope, "edit", base_key, index), help="Editar alimento", use_container_width=True):
                             show_edit_inventory_dialog(item_key)
                     with delete_col:
-                        if st.button("🗑️", key=f"delete_inventory_{base_key}", help="Eliminar alimento", use_container_width=True):
+                        if st.button("🗑️", key=inventory_action_key(key_scope, "delete", base_key, index), help="Eliminar alimento", use_container_width=True):
                             show_delete_inventory_dialog(item_key)
                 else:
                     st.markdown(f"#### {sentence_case(item.name)}")
@@ -1604,7 +1612,12 @@ profile, remember_fridge, update_mode, generate_recipe_images = build_profile()
 show_hero()
 show_fridge_question_box(remember_fridge)
 if remember_fridge:
-    show_inventory(get_inventory(), title="Alimentos guardados", editable=True)
+    show_inventory(
+        get_inventory(),
+        title="Alimentos guardados",
+        editable=True,
+        widget_namespace="saved_inventory_top",
+    )
     show_inventory_action_message()
 
 st.header("1. Entrada")
@@ -1653,14 +1666,54 @@ current_tab_index = 2
 if "Cámara del dispositivo" in available_tabs:
     with tabs[current_tab_index]:
         st.write("Haz una foto de la nevera o de los alimentos directamente desde este dispositivo.")
-        st.caption("El navegador te pedirá permiso para usar la cámara cuando sea necesario.")
-        device_photo = st.camera_input("Hacer foto desde este dispositivo", key="device_camera_photo")
-        if device_photo:
-            image_bytes = device_photo.getvalue()
-            mime_type = device_photo.type or "image/jpeg"
-            store_current_image(image_bytes, mime_type, "Foto del dispositivo", "device_camera")
-            st.success("Foto realizada correctamente.")
-            st.image(image_bytes, caption="Foto preparada", use_container_width=True)
+        st.caption(
+            "La cámara trasera se abre de forma predeterminada. "
+            "Puedes cambiar de cámara cuando el dispositivo disponga de más de una."
+        )
+        try:
+            device_capture = rear_camera_input(
+                key="device_camera_rear",
+                max_image_mb=settings.max_image_mb,
+                preferred_facing_mode="environment",
+                capture_label=t("Hacer foto"),
+                switch_label=t("Cambiar cámara"),
+                starting_label=t("Abriendo la cámara trasera…"),
+            )
+        except Exception:
+            device_capture = None
+            st.warning(
+                "No he podido preparar la cámara de este dispositivo. "
+                "Puedes continuar desde la pestaña Subir foto."
+            )
+
+        if device_capture:
+            previous_capture_id = st.session_state.get("last_device_camera_capture_id")
+            if device_capture.capture_id != previous_capture_id:
+                try:
+                    validate_image_upload(
+                        device_capture.image_bytes,
+                        device_capture.mime_type,
+                        settings.max_image_mb,
+                    )
+                    store_current_image(
+                        device_capture.image_bytes,
+                        device_capture.mime_type,
+                        "Foto del dispositivo",
+                        "device_camera",
+                    )
+                    st.session_state["last_device_camera_capture_id"] = device_capture.capture_id
+                    st.success("Foto realizada correctamente.")
+                except ImageValidationError as exc:
+                    st.error(str(exc))
+                except Exception:
+                    st.error(
+                        "No he podido preparar la foto realizada. "
+                        "Vuelve a intentarlo o usa la pestaña Subir foto."
+                    )
+
+        current_device_image, _, current_device_source = get_current_image()
+        if current_device_image and current_device_source == "device_camera":
+            st.image(current_device_image, caption="Foto preparada", use_container_width=True)
     current_tab_index += 1
 
 with tabs[current_tab_index]:
@@ -1764,7 +1817,12 @@ if analyze_clicked:
                 show_inventory(update_result.inventory, title="Alimentos detectados")
             elif remember_fridge and get_inventory():
                 st.info("No se han introducido alimentos nuevos. Mantengo la nevera guardada tal como estaba.")
-                show_inventory(get_inventory(), title="Alimentos guardados actualmente", editable=True)
+                show_inventory(
+                    get_inventory(),
+                    title="Alimentos guardados actualmente",
+                    editable=True,
+                    widget_namespace="saved_inventory_analysis_result",
+                )
 
 if recipes_clicked:
     if not has_available_input:
