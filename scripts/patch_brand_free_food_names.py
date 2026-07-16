@@ -11,7 +11,6 @@ INVENTORY = ROOT / "src" / "fridgechef" / "inventory.py"
 RECIPE = ROOT / "src" / "fridgechef" / "recipe_planner.py"
 VISION = ROOT / "src" / "fridgechef" / "vision.py"
 TEXT = ROOT / "src" / "fridgechef" / "text_parser.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "apply-additive-multi-input.yml"
 
 
 def _replace(source: str, old: str, new: str, description: str) -> str:
@@ -117,15 +116,6 @@ def _patch_text(source: str) -> str:
     )
 
 
-def _patch_workflow(source: str) -> str:
-    return _replace(
-        source,
-        '''      - name: Verify collapsible recipe UI and recovered-provider logs\n        run: python -m scripts.patch_collapsible_ingredients_and_logs\n''',
-        '''      - name: Verify collapsible recipe UI and recovered-provider logs\n        run: python -m scripts.patch_collapsible_ingredients_and_logs\n\n      - name: Verify brand-free food normalization\n        run: python -m scripts.patch_brand_free_food_names\n''',
-        "CI brand-free verification step",
-    )
-
-
 def _write(path: Path, content: str) -> None:
     current = path.read_text(encoding="utf-8")
     if current != content:
@@ -138,7 +128,6 @@ def apply() -> None:
     _write(RECIPE, _patch_recipe(RECIPE.read_text(encoding="utf-8")))
     _write(VISION, _patch_vision(VISION.read_text(encoding="utf-8")))
     _write(TEXT, _patch_text(TEXT.read_text(encoding="utf-8")))
-    _write(WORKFLOW, _patch_workflow(WORKFLOW.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":
