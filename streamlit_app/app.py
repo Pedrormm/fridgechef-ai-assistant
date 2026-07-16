@@ -13,6 +13,10 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT))
 
+from src.fridgechef.app_preferences import (
+    load_visual_theme_preference,
+    save_visual_theme_preference,
+)
 from src.fridgechef.blink_camera import capture_blink_photo_sync
 from src.fridgechef.config import get_settings
 from src.fridgechef.device_camera import rear_camera_input
@@ -224,6 +228,11 @@ def init_state() -> None:
     """Create session state and restore the fridge from the database on refresh."""
     is_new_browser_session = "fridge_inventory" not in st.session_state
     saved_language = load_language_preference() if is_new_browser_session else current_language()
+    saved_theme = (
+        load_visual_theme_preference()
+        if is_new_browser_session
+        else st.session_state.get("selected_visual_theme", "current")
+    )
     defaults = {
         "app_language": saved_language,
         "current_image_bytes": None,
@@ -246,7 +255,7 @@ def init_state() -> None:
         "inventory_persistence_backend": "",
         "inventory_persistence_ok": True,
         "inventory_persistence_warning": "",
-        "selected_visual_theme": "current",
+        "selected_visual_theme": saved_theme,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -984,31 +993,37 @@ def optional_multiselect_with_other(
     return clean_selected, custom_value
 
 
-def render_theme_selector() -> str:
-    """Show the three visual themes without changing app behaviour.
+def _commit_theme_selection(widget_key: str) -> None:
+    """Persist the selected theme before Streamlit reruns the application."""
+    selected_theme = save_visual_theme_preference(st.session_state.get(widget_key))
+    st.session_state["selected_visual_theme"] = selected_theme
 
-    The selected theme is stored in ``selected_visual_theme``. The visible
-    selectbox uses a language-versioned widget key so the displayed label is
-    rebuilt immediately after switching between Spanish and English.
+
+def render_theme_selector() -> str:
+    """Show the visual themes and restore the saved choice after a full refresh.
+
+    Streamlit Session State is reset when the browser reconnects, so the selected
+    theme is loaded from SQLite during ``init_state``. The selectbox callback
+    writes each change before the normal top-to-bottom rerun applies the new CSS.
     """
     options = theme_options()
     current = st.session_state.get("selected_visual_theme", "current")
     if current not in options:
-        current = "current"
+        current = save_visual_theme_preference("current")
         st.session_state["selected_visual_theme"] = current
 
+    widget_key = f"selected_visual_theme_widget_v3_{current_language()}"
     with st.sidebar:
-        selected = st.selectbox(
+        st.selectbox(
             "Tema visual",
             options,
             index=options.index(current),
-            key=f"selected_visual_theme_widget_v2_{current_language()}",
+            key=widget_key,
             format_func=theme_label,
             help="Cambia únicamente la estética de la aplicación. No modifica tus alimentos ni tus preferencias.",
+            on_change=_commit_theme_selection,
+            args=(widget_key,),
         )
-        if selected != current:
-            st.session_state["selected_visual_theme"] = selected
-            st.rerun()
         st.divider()
     return st.session_state.get("selected_visual_theme", "current")
 
