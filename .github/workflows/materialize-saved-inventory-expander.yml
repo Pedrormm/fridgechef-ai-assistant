@@ -3,7 +3,7 @@ name: Materialize saved inventory expander
 on:
   push:
     branches:
-      - feat/collapsible-saved-inventory
+      - feat/collapsible-saved-inventory-v2
   pull_request:
     branches:
       - main
@@ -21,7 +21,7 @@ jobs:
       - name: Check out feature branch
         uses: actions/checkout@v7
         with:
-          ref: feat/collapsible-saved-inventory
+          ref: feat/collapsible-saved-inventory-v2
           persist-credentials: false
 
       - name: Set up Python
