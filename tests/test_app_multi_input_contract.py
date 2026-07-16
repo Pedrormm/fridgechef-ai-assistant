@@ -19,6 +19,35 @@ def test_app_keeps_all_input_channels_independent():
     assert "use_prepared_image" not in source
 
 
+def test_native_file_upload_is_prepared_in_an_on_change_callback():
+    source = _app_source()
+
+    assert "def prepare_uploaded_image_from_widget" in source
+    assert "on_change=prepare_uploaded_image_from_widget" in source
+    assert "uploaded is not None" in source
+    assert "read_uploaded_image" in source
+    assert 'st.image(upload_image.image_bytes, caption="Foto preparada"' in source
+
+
+def test_new_upload_event_survives_consumed_input_cleanup():
+    source = _app_source()
+
+    assert "def mark_prepared_images_consumed" in source
+    assert 'st.session_state["consumed_input_ids"]' in source
+    assert "input_id != str(consumed.get(source) or \"\")" in source
+    assert "mark_prepared_images_consumed(images)" in source
+
+
+def test_file_uploader_css_does_not_hide_native_file_state():
+    source = _app_source()
+
+    assert '[data-testid="stFileUploaderDropzone"] button *' not in source
+    assert '[data-testid="stFileUploaderFileName"] *' not in source
+    assert "color: transparent !important" not in source.split(
+        '[data-testid="stFileUploader"]', 1
+    )[1].split('[data-testid="stCameraInput"] p,', 1)[0]
+
+
 def test_app_uses_atomic_multi_input_inventory_pipeline():
     source = _app_source()
 
