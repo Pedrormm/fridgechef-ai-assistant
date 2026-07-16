@@ -1,0 +1,112 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.camera-shell {
+  width: 100%;
+  padding: 2px;
+}
+
+.preview-wrap {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  min-height: 220px;
+  border: 1px solid rgba(128, 128, 128, 0.32);
+  border-radius: 18px;
+  background: #111;
+}
+
+video {
+  display: block;
+  width: 100%;
+  max-height: 68vh;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: #111;
+}
+
+video.mirror {
+  transform: scaleX(-1);
+}
+
+.camera-status {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(20, 20, 20, 0.76);
+  color: #fff;
+  font-size: 0.92rem;
+  line-height: 1.25;
+  backdrop-filter: blur(4px);
+}
+
+.camera-status[data-kind="error"] {
+  background: rgba(133, 31, 31, 0.9);
+}
+
+.camera-status[data-kind="success"] {
+  background: rgba(26, 94, 57, 0.88);
+}
+
+.camera-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+
+button {
+  min-height: 46px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+button.primary {
+  border: 1px solid #f0526c;
+  background: #f0526c;
+  color: #fff;
+}
+
+button.secondary {
+  border: 1px solid rgba(128, 128, 128, 0.42);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+
+@media (max-width: 520px) {
+  .preview-wrap {
+    min-height: 260px;
+  }
+
+  video {
+    aspect-ratio: 3 / 4;
+    max-height: 72vh;
+  }
+
+  .camera-controls {
+    grid-template-columns: 1fr;
+  }
+}
