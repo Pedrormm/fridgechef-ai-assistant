@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from src.fridgechef.availability import normalize_text, unique_clean
+from src.fridgechef.name_matching import inventory_name_key
 from src.fridgechef.models import (
     BarcodeObservation,
     FridgeAnalysis,
@@ -92,7 +93,7 @@ def _manual_inventory(
 
     for mention in mentions:
         name = mention.name.strip()
-        key = normalize_text(name)
+        key = inventory_name_key(name)
         if not key:
             continue
         notes = [*mention.notes, now_note]
@@ -121,11 +122,11 @@ def _image_inventory(analysis: FridgeAnalysis | None, source: str) -> list[Inven
     items: list[InventoryItem] = []
     now_note = f"Actualizado: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     source_label = _source_label(source)
-    spoiled_keys = {normalize_text(item.name) for item in analysis.possible_spoiled_items}
+    spoiled_keys = {inventory_name_key(item.name) for item in analysis.possible_spoiled_items}
 
     for ingredient in analysis.visible_ingredients:
         name = ingredient.name.strip()
-        key = normalize_text(name)
+        key = inventory_name_key(name)
         if not key:
             continue
 
@@ -210,7 +211,7 @@ def consolidate_inventory(
     """Deduplicate one source while preserving or summing quantities as requested."""
     consolidated: dict[str, InventoryItem] = {}
     for raw_item in items:
-        key = raw_item.normalized_name or normalize_text(raw_item.name)
+        key = inventory_name_key(raw_item.name or raw_item.normalized_name)
         if not key:
             continue
 
@@ -242,7 +243,7 @@ def combine_input_inventories(
     combined: dict[str, InventoryItem] = {}
     for inventory in inventories:
         for item in consolidate_inventory(inventory, quantity_mode="max"):
-            key = item.normalized_name or normalize_text(item.name)
+            key = inventory_name_key(item.name or item.normalized_name)
             if key in combined:
                 combined[key] = _merge_item(combined[key], item, quantity_mode="sum")
             else:

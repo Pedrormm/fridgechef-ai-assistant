@@ -35,7 +35,6 @@ from src.fridgechef.inventory import (
     friendly_state_label,
     inventory_from_inputs,
     inventory_to_recipe_ingredients,
-    needs_replace_confirmation,
 )
 from src.fridgechef.models import FridgeAnalysis, InventoryItem, InventoryUpdateResult, RecipeResponse, UserProfile
 from src.fridgechef.inventory_editor import (
@@ -803,7 +802,6 @@ def capture_internal_camera_with_feedback() -> None:
                 "No he podido realizar una foto nueva con la cámara interna. "
                 "Revisa que esté conectada, con batería o alimentación, y vuelve a intentarlo."
             )
-            st.caption(clean_user_text(exc))
 
 
 def can_offer_device_camera() -> bool:
@@ -1636,12 +1634,6 @@ def analyze_current_inputs(
     update_result = None
     if remember_fridge:
         existing_inventory = get_inventory()
-        if needs_replace_confirmation(existing_inventory, incoming_items, update_mode) and not confirm_replace:
-            raise UserFacingError(
-                "Parece que esta entrada tiene muchos menos alimentos que tu nevera guardada. "
-                "Si es una entrada parcial, elige 'Añadir sin borrar lo anterior'. "
-                "Si realmente quieres sustituirlo todo, marca la confirmación."
-            )
         update_result = apply_inventory_update(existing_inventory, incoming_items, update_mode)
         set_inventory(update_result.inventory, persist=True)
         st.session_state["clear_consumed_inputs"] = True
@@ -1903,12 +1895,6 @@ if prepared_images:
     st.caption(f"Entradas de imagen preparadas: {prepared_labels}")
 
 confirm_replace = False
-if remember_fridge and update_mode == "replace" and get_inventory():
-    confirm_replace = st.checkbox(
-        "Confirmo que esta entrada representa la nevera completa y sustituye lo que había anteriormente",
-        value=False,
-        help="Solo es necesario marcarlo cuando la nueva entrada parece mucho más pequeña que el inventario guardado.",
-    )
 
 st.header("2. Resultado")
 if remember_fridge:
