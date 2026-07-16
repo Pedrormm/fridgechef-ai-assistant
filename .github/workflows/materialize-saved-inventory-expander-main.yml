@@ -73,7 +73,7 @@ jobs:
           node --check src/fridgechef/components/rear_camera/main.js 2>&1 | tee -a /tmp/saved-inventory-validation.log
           node --check src/fridgechef/components/mobile_upload/main.js 2>&1 | tee -a /tmp/saved-inventory-validation.log
 
-      - name: Create validated commit object
+      - name: Create validated review branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -83,12 +83,14 @@ jobs:
           import base64
           import json
           import os
+          import urllib.error
           import urllib.request
           from pathlib import Path
 
           repository = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GH_TOKEN"]
           api_root = f"https://api.github.com/repos/{repository}"
+          target_branch = "validated/saved-inventory-expander"
 
           def request(method: str, path: str, payload: dict | None = None) -> dict:
               data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -152,18 +154,35 @@ jobs:
                   "parents": [parent_sha],
               },
           )
+
+          try:
+              request(
+                  "PATCH",
+                  f"/git/refs/heads/{target_branch}",
+                  {"sha": commit["sha"], "force": True},
+              )
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+              request(
+                  "POST",
+                  "/git/refs",
+                  {"ref": f"refs/heads/{target_branch}", "sha": commit["sha"]},
+              )
+
           Path("/tmp/validated-commit-sha.txt").write_text(
               commit["sha"] + "\n",
               encoding="utf-8",
           )
-          print(f"Validated commit object: {commit['sha']}")
+          print(f"Validated review branch: {target_branch}")
+          print(f"Validated commit: {commit['sha']}")
           PY
 
-      - name: Publish validated commit and diagnostics
+      - name: Publish validation diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: saved-inventory-validated-commit
+          name: saved-inventory-validated-branch
           path: |
             /tmp/saved-inventory-validation.log
             /tmp/validated-commit-sha.txt
