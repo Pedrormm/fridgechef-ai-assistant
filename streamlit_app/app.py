@@ -17,6 +17,11 @@ from src.fridgechef.blink_camera import capture_blink_photo_sync
 from src.fridgechef.config import get_settings
 from src.fridgechef.device_camera import rear_camera_input
 from src.fridgechef.fridge_qa import answer_fridge_question
+from src.fridgechef.input_pipeline import (
+    PreparedImageInput,
+    build_incoming_inventory,
+    merge_fridge_analyses,
+)
 from src.fridgechef.i18n import (
     install_streamlit_i18n,
     language_option_label,
@@ -47,6 +52,11 @@ from src.fridgechef.persistence import (
     save_session_if_allowed,
 )
 from src.fridgechef.preferences import PreferenceValidationError, validate_profile_preferences
+from src.fridgechef.quantities import (
+    display_quantity_label,
+    format_quantity_parts,
+    parse_quantity_label,
+)
 from src.fridgechef.recipe_images import attach_recipe_images
 from src.fridgechef.recipe_planner import clean_user_text, generate_recipes, sentence_case
 from src.fridgechef.security import ImageValidationError, validate_image_upload
@@ -219,6 +229,10 @@ def init_state() -> None:
         "current_image_mime_type": "image/jpeg",
         "current_image_caption": "",
         "current_image_source": "upload",
+        "prepared_images": {},
+        "manual_input_version": 0,
+        "upload_widget_version": 0,
+        "clear_consumed_inputs": False,
         "fridge_inventory": [],
         "last_analysis": None,
         "last_update": None,
@@ -702,21 +716,68 @@ def show_clear_inventory_dialog(remember_fridge: bool) -> None:
             _confirm_content()
 
 
-def store_current_image(image_data: bytes, image_mime_type: str, caption: str, source: InputSource) -> None:
-    """Keep the selected image available after Streamlit reruns the script."""
-    st.session_state["current_image_bytes"] = image_data
-    st.session_state["current_image_mime_type"] = image_mime_type
-    st.session_state["current_image_caption"] = caption
-    st.session_state["current_image_source"] = source
+def store_prepared_image(
+    image_data: bytes,
+    image_mime_type: str,
+    caption: str,
+    source: InputSource,
+) -> None:
+    """Keep one image per input channel so every prepared source can be analyzed."""
+    prepared = dict(st.session_state.get("prepared_images", {}))
+    prepared[source] = {
+        "image_bytes": image_data,
+        "mime_type": image_mime_type,
+        "caption": caption,
+    }
+    st.session_state["prepared_images"] = prepared
 
 
-def get_current_image() -> tuple[bytes | None, str, InputSource]:
-    """Return the current image, its MIME type and the input source."""
-    return (
-        st.session_state.get("current_image_bytes"),
-        st.session_state.get("current_image_mime_type", "image/jpeg"),
-        st.session_state.get("current_image_source", "upload"),
+def get_prepared_image(source: InputSource) -> PreparedImageInput | None:
+    """Return one prepared image without affecting the other input channels."""
+    payload = st.session_state.get("prepared_images", {}).get(source)
+    if not isinstance(payload, dict) or not payload.get("image_bytes"):
+        return None
+    return PreparedImageInput(
+        source=source,
+        image_bytes=payload["image_bytes"],
+        mime_type=str(payload.get("mime_type") or "image/jpeg"),
+        caption=str(payload.get("caption") or "Foto preparada"),
     )
+
+
+def get_prepared_images() -> list[PreparedImageInput]:
+    """Return every prepared image in a stable processing order."""
+    images: list[PreparedImageInput] = []
+    for source in ("upload", "device_camera", "internal_camera"):
+        image = get_prepared_image(source)
+        if image is not None:
+            images.append(image)
+    return images
+
+
+def clear_prepared_image(source: InputSource) -> None:
+    """Remove one image while preserving the remaining prepared inputs."""
+    prepared = dict(st.session_state.get("prepared_images", {}))
+    prepared.pop(source, None)
+    st.session_state["prepared_images"] = prepared
+    if source == "upload":
+        st.session_state["upload_widget_version"] = int(
+            st.session_state.get("upload_widget_version", 0)
+        ) + 1
+
+
+def reset_consumed_inputs_if_needed() -> None:
+    """Clear persisted inputs on the next rerun to prevent accidental double counting."""
+    if not st.session_state.get("clear_consumed_inputs"):
+        return
+    st.session_state["prepared_images"] = {}
+    st.session_state["manual_input_version"] = int(
+        st.session_state.get("manual_input_version", 0)
+    ) + 1
+    st.session_state["upload_widget_version"] = int(
+        st.session_state.get("upload_widget_version", 0)
+    ) + 1
+    st.session_state["clear_consumed_inputs"] = False
 
 
 def capture_internal_camera_with_feedback() -> None:
@@ -733,10 +794,9 @@ def capture_internal_camera_with_feedback() -> None:
             status.write(t("Comprobando que la foto se ha guardado correctamente."))
             image_bytes = Path(output).read_bytes()
             validate_image_upload(image_bytes, "image/jpeg", settings.max_image_mb)
-            store_current_image(image_bytes, "image/jpeg", "Foto de cámara interna", "internal_camera")
+            store_prepared_image(image_bytes, "image/jpeg", "Foto de cámara interna", "internal_camera")
             status.update(label=t("Foto realizada"), state="complete", expanded=False)
             st.success("Foto realizada correctamente.")
-            st.image(image_bytes, caption="Foto preparada", use_container_width=True)
         except Exception as exc:
             status.update(label=t("No he podido realizar la foto"), state="error", expanded=False)
             st.error(
@@ -1102,9 +1162,8 @@ def show_manual_feedback(parse_result: ManualIngredientParseResult) -> None:
     """Explain which manual fragments were accepted or ignored."""
     if parse_result.accepted_items:
         names = [
-            f"{sentence_case(item.name)} ({clean_user_text(item.quantity_label)})"
-            if item.quantity_label != "Cantidad no indicada"
-            else sentence_case(item.name)
+            f"{sentence_case(item.name)} "
+            f"({display_quantity_label({}, item.quantity_label, current_language())})"
             for item in parse_result.accepted_items
         ]
         st.success("Tendré en cuenta: " + ", ".join(names))
@@ -1243,11 +1302,14 @@ def show_edit_inventory_dialog(item_key: str) -> None:
             st.warning(duplicate_message, __skip_i18n=True)
             return
 
+        quantity_parts = parse_quantity_label(validation.quantity_label)
         updated_item = item.model_copy(
             update={
                 "name": validation.name,
                 "normalized_name": validation.normalized_name,
-                "quantity_label": validation.quantity_label,
+                "quantity": max(1, int(round(quantity_parts.get("unit", 1.0)))),
+                "quantity_label": format_quantity_parts(quantity_parts, "es"),
+                "quantity_parts": quantity_parts,
                 "state": validation.state,
             }
         )
@@ -1341,7 +1403,12 @@ def show_inventory(
                 else:
                     st.markdown(f"#### {sentence_case(item.name)}")
 
-                st.write(f"**Cantidad:** {clean_user_text(item.quantity_label)}")
+                quantity_text = display_quantity_label(
+                    item.quantity_parts,
+                    item.quantity_label,
+                    current_language(),
+                )
+                st.write(f"**Cantidad:** {clean_user_text(quantity_text)}")
                 st.write(f"**Estado:** {friendly_state_label(item.state)}")
                 if item.expiry_text:
                     st.write(f"**Caducidad visible:** {clean_user_text(item.expiry_text)}")
@@ -1357,7 +1424,9 @@ def show_inventory_update(update_result: InventoryUpdateResult) -> None:
     if update_result.mode == "replace":
         message = _html_text("He actualizado la nevera con lo que acabas de analizar.")
     else:
-        message = _html_text("He añadido los alimentos nuevos sin duplicar los que ya estaban guardados.")
+        message = _html_text(
+            "He añadido los alimentos nuevos y he sumado las cantidades cuando ya estaban guardados."
+        )
     st.markdown(f"<div class='success-soft'>{message}</div>", unsafe_allow_html=True)
 
     details = []
@@ -1369,6 +1438,26 @@ def show_inventory_update(update_result: InventoryUpdateResult) -> None:
         details.append("Ya no aparecen: " + ", ".join(sentence_case(item) for item in update_result.removed))
     if details:
         st.caption(" · ".join(details))
+
+    for change in update_result.quantity_changes:
+        if current_language() == "en":
+            quantity_message = (
+                f"{sentence_case(change.name)}: there were "
+                f"{display_quantity_label({}, change.previous_quantity_label, 'en')}, "
+                f"{display_quantity_label({}, change.incoming_quantity_label, 'en')} were added, "
+                f"and there are now "
+                f"{display_quantity_label({}, change.resulting_quantity_label, 'en')}."
+            )
+        else:
+            quantity_message = (
+                f"{sentence_case(change.name)}: había "
+                f"{display_quantity_label({}, change.previous_quantity_label, 'es')}, "
+                f"se han añadido "
+                f"{display_quantity_label({}, change.incoming_quantity_label, 'es')} "
+                f"y ahora hay "
+                f"{display_quantity_label({}, change.resulting_quantity_label, 'es')}."
+            )
+        st.info(quantity_message, __skip_i18n=True)
 
 
 def show_no_recipe_response(response: RecipeResponse) -> None:
@@ -1468,65 +1557,114 @@ def analyze_current_inputs(
     remember_fridge: bool,
     update_mode: UpdateMode,
     confirm_replace: bool,
-    use_prepared_image: bool = True,
+    prepared_images: list[PreparedImageInput] | None = None,
     no_food_message: str | None = None,
 ) -> ActionResult:
-    """Analyze manual text and the current image, then update inventory when enabled."""
+    """Analyze every prepared input before applying one atomic inventory update."""
     validate_profile_preferences(profile)
     parse_result = parse_manual_ingredients(manual_text)
-    image_bytes, mime_type, image_source = get_current_image()
-    if not use_prepared_image:
-        image_bytes = None
+    images = list(prepared_images or [])
 
-    if manual_text.strip() and not parse_result.accepted_items and not image_bytes:
+    if not manual_text.strip() and not images:
+        if remember_fridge and get_inventory():
+            return None, None, parse_result
+        raise UserFacingError(
+            no_food_message
+            or "No hay texto ni fotos preparados. Escribe algún alimento o añade una foto para empezar."
+        )
+
+    if manual_text.strip() and not parse_result.accepted_items and not images:
         if not parse_result.used_agent:
             raise UserFacingError(
                 "No he podido conectar con el agente de IA que entiende los alimentos. "
                 "El texto parece válido, pero ahora mismo no puedo revisarlo con Gemini."
             )
         raise UserFacingError(
-            "No he encontrado alimentos claros en el texto. Escribe alimentos concretos, con cantidades si las conoces, y vuelve a intentarlo."
+            "No he encontrado alimentos claros en el texto. "
+            "Escribe alimentos concretos, con cantidades si las conoces, y vuelve a intentarlo."
         )
 
-    analysis = None
-    if image_bytes:
-        validate_image_upload(image_bytes, mime_type, settings.max_image_mb)
-        analysis = analyze_image_bytes(image_bytes, mime_type)
+    image_results: list[tuple[str, FridgeAnalysis]] = []
+    for prepared_image in images:
+        validate_image_upload(
+            prepared_image.image_bytes,
+            prepared_image.mime_type,
+            settings.max_image_mb,
+        )
+        try:
+            image_analysis = analyze_image_bytes(
+                prepared_image.image_bytes,
+                prepared_image.mime_type,
+            )
+        except ImageValidationError:
+            raise
+        except Exception as exc:
+            raise UserFacingError(
+                f"No he podido analizar {prepared_image.caption.lower()}. "
+                "No he cambiado la nevera guardada. Vuelve a intentarlo en unos segundos."
+            ) from exc
+        image_results.append((prepared_image.source, image_analysis))
 
-    incoming_items = inventory_from_inputs(
-        parse_result.accepted,
-        analysis,
-        source=image_source,
-        manual_items=parse_result.accepted_items,
+    incoming_items = build_incoming_inventory(
+        parse_result.accepted_items,
+        image_results,
     )
-    if not incoming_items and (not remember_fridge or not get_inventory()):
-        raise UserFacingError(
-            no_food_message
-            or "No he encontrado alimentos nuevos que analizar. Escribe algún alimento claro o sube una foto para actualizar la nevera."
-        )
+    if not incoming_items:
+        if manual_text.strip() and images:
+            message = (
+                "No he encontrado alimentos ni en el texto ni en las fotos preparadas. "
+                "Mantengo la nevera guardada tal como estaba."
+            )
+        elif images:
+            message = (
+                "No he encontrado alimentos claros en las fotos preparadas. "
+                "Mantengo la nevera guardada tal como estaba."
+            )
+        elif not parse_result.used_agent:
+            message = (
+                "No he podido conectar con el agente de IA que entiende los alimentos. "
+                "No he cambiado la nevera guardada."
+            )
+        else:
+            message = (
+                "No he encontrado alimentos claros en el texto. "
+                "Mantengo la nevera guardada tal como estaba."
+            )
+        raise UserFacingError(message)
 
+    analysis = merge_fridge_analyses(result for _, result in image_results)
     update_result = None
-    if remember_fridge and incoming_items:
+    if remember_fridge:
         existing_inventory = get_inventory()
         if needs_replace_confirmation(existing_inventory, incoming_items, update_mode) and not confirm_replace:
             raise UserFacingError(
                 "Parece que esta entrada tiene muchos menos alimentos que tu nevera guardada. "
-                "Si es una foto parcial, elige 'Añadir sin borrar lo anterior'. Si realmente quieres sustituirlo todo, marca la confirmación."
+                "Si es una entrada parcial, elige 'Añadir sin borrar lo anterior'. "
+                "Si realmente quieres sustituirlo todo, marca la confirmación."
             )
         update_result = apply_inventory_update(existing_inventory, incoming_items, update_mode)
-        set_inventory(update_result.inventory, persist=remember_fridge)
+        set_inventory(update_result.inventory, persist=True)
+        st.session_state["clear_consumed_inputs"] = True
         session_id = save_session_if_allowed(
             {
                 "event": "inventory_update",
                 "update_mode": update_mode,
+                "input_sources": [
+                    *(("manual",) if parse_result.accepted_items else ()),
+                    *(source for source, _ in image_results),
+                ],
                 "fridge_inventory": [item.model_dump() for item in update_result.inventory],
             },
-            allow_save=remember_fridge,
+            allow_save=True,
         )
         if session_id:
             st.session_state["last_inventory_session_id"] = session_id
-    elif incoming_items:
-        update_result = InventoryUpdateResult(inventory=incoming_items, added=[item.name for item in incoming_items], mode="replace")
+    else:
+        update_result = InventoryUpdateResult(
+            inventory=incoming_items,
+            added=[item.name for item in incoming_items],
+            mode="replace",
+        )
 
     st.session_state["last_analysis"] = analysis.model_dump() if analysis else None
     st.session_state["last_update"] = update_result.model_dump() if update_result else None
@@ -1603,6 +1741,7 @@ def run_action_with_status(label: str, steps: list[str], action: Callable) -> ob
 
 
 init_state()
+reset_consumed_inputs_if_needed()
 install_streamlit_i18n(st, current_language)
 selected_visual_theme = render_theme_selector()
 apply_app_style()
@@ -1649,18 +1788,37 @@ with tabs[0]:
     manual_text = st.text_area(
         "Ingredientes manuales",
         placeholder="Ejemplo: huevos, arroz, tomate, calabacín, queso",
-        help="Puedes mezclar frases normales con ingredientes. La app separará los alimentos y descartará lo que no sirva para la nevera.",
+        help=(
+            "Puedes mezclar frases normales con ingredientes. La app separará los alimentos "
+            "y descartará lo que no sirva para la nevera."
+        ),
+        key=f"manual_ingredients_{st.session_state.get('manual_input_version', 0)}",
     )
     if manual_text.strip():
-        st.caption("Revisaré el texto al pulsar Analizar nevera o Generar recetas para evitar llamadas innecesarias mientras escribes.")
+        st.caption(
+            "Revisaré el texto al pulsar Analizar nevera o Generar recetas para evitar "
+            "llamadas innecesarias mientras escribes."
+        )
 
 with tabs[1]:
-    uploaded = st.file_uploader("Sube una foto de alimentos (JPG, PNG o WEBP)", type=["jpg", "jpeg", "png", "webp"])
+    uploaded = st.file_uploader(
+        "Sube una foto de alimentos (JPG, PNG o WEBP)",
+        type=["jpg", "jpeg", "png", "webp"],
+        key=f"fridge_upload_{st.session_state.get('upload_widget_version', 0)}",
+        max_upload_size=settings.max_image_mb,
+    )
     if uploaded:
         image_bytes = uploaded.getvalue()
         mime_type = uploaded.type or mimetypes.guess_type(uploaded.name)[0] or "image/jpeg"
-        store_current_image(image_bytes, mime_type, "Foto subida", "upload")
-        st.image(image_bytes, caption="Foto preparada", use_container_width=True)
+        validate_image_upload(image_bytes, mime_type, settings.max_image_mb)
+        store_prepared_image(image_bytes, mime_type, "Foto subida", "upload")
+
+    upload_image = get_prepared_image("upload")
+    if upload_image:
+        st.image(upload_image.image_bytes, caption="Foto preparada", use_container_width=True)
+        if st.button("Quitar foto subida", key="clear_upload_photo", use_container_width=True):
+            clear_prepared_image("upload")
+            st.rerun()
 
 current_tab_index = 2
 if "Cámara del dispositivo" in available_tabs:
@@ -1695,7 +1853,7 @@ if "Cámara del dispositivo" in available_tabs:
                         device_capture.mime_type,
                         settings.max_image_mb,
                     )
-                    store_current_image(
+                    store_prepared_image(
                         device_capture.image_bytes,
                         device_capture.mime_type,
                         "Foto del dispositivo",
@@ -1711,9 +1869,16 @@ if "Cámara del dispositivo" in available_tabs:
                         "Vuelve a intentarlo o usa la pestaña Subir foto."
                     )
 
-        current_device_image, _, current_device_source = get_current_image()
-        if current_device_image and current_device_source == "device_camera":
-            st.image(current_device_image, caption="Foto preparada", use_container_width=True)
+        device_image = get_prepared_image("device_camera")
+        if device_image:
+            st.image(device_image.image_bytes, caption="Foto preparada", use_container_width=True)
+            if st.button(
+                "Quitar foto del dispositivo",
+                key="clear_device_photo",
+                use_container_width=True,
+            ):
+                clear_prepared_image("device_camera")
+                st.rerun()
     current_tab_index += 1
 
 with tabs[current_tab_index]:
@@ -1721,20 +1886,21 @@ with tabs[current_tab_index]:
     if st.button("Hacer foto con cámara interna"):
         capture_internal_camera_with_feedback()
 
-    current_internal_image, _, current_internal_source = get_current_image()
-    if current_internal_image and current_internal_source == "internal_camera":
-        st.image(current_internal_image, caption="Foto preparada", use_container_width=True)
+    internal_image = get_prepared_image("internal_camera")
+    if internal_image:
+        st.image(internal_image.image_bytes, caption="Foto preparada", use_container_width=True)
+        if st.button(
+            "Quitar foto de la cámara interna",
+            key="clear_internal_photo",
+            use_container_width=True,
+        ):
+            clear_prepared_image("internal_camera")
+            st.rerun()
 
-image_bytes, _, _ = get_current_image()
-use_prepared_image = bool(image_bytes)
-if image_bytes:
-    st.caption(f"Imagen preparada: {st.session_state.get('current_image_caption', 'foto seleccionada')}")
-    if manual_text.strip():
-        use_prepared_image = st.checkbox(
-            "También usar la imagen preparada en este análisis",
-            value=False,
-            help="Déjalo desmarcado si solo quieres analizar los ingredientes que acabas de escribir.",
-        )
+prepared_images = get_prepared_images()
+if prepared_images:
+    prepared_labels = ", ".join(image.caption for image in prepared_images)
+    st.caption(f"Entradas de imagen preparadas: {prepared_labels}")
 
 confirm_replace = False
 if remember_fridge and update_mode == "replace" and get_inventory():
@@ -1785,7 +1951,7 @@ if st.session_state.get("inventory_clear_message"):
     st.markdown(f"<div class='danger-soft'>{clear_message}</div>", unsafe_allow_html=True)
     st.session_state["inventory_clear_message"] = ""
 
-has_available_input = bool(manual_text.strip() or use_prepared_image or (remember_fridge and get_inventory()))
+has_available_input = bool(manual_text.strip() or prepared_images or (remember_fridge and get_inventory()))
 
 if analyze_clicked:
     if not has_available_input:
@@ -1795,7 +1961,7 @@ if analyze_clicked:
             "Analizando tu nevera",
             [
                 "Entendiendo el texto que has escrito, si lo hay.",
-                "Revisando la foto si hay una imagen preparada.",
+                "Revisando todas las fotos que has preparado.",
                 "Separando alimentos reales de texto que no corresponde a la nevera.",
                 "Revisión terminada.",
             ],
@@ -1805,7 +1971,7 @@ if analyze_clicked:
                 remember_fridge,
                 update_mode,
                 confirm_replace,
-                use_prepared_image,
+                prepared_images,
                 "No he encontrado alimentos que analizar. Escribe al menos un alimento claro o sube una foto para empezar.",
             ),
         )
@@ -1835,7 +2001,7 @@ if recipes_clicked:
                 remember_fridge,
                 update_mode,
                 confirm_replace,
-                use_prepared_image,
+                prepared_images,
                 "No es posible generar recetas si no se ha introducido ningún alimento. Escribe ingredientes o sube una foto y vuelve a intentarlo.",
             )
             status.write(t("Creando recetas con los alimentos disponibles."))
