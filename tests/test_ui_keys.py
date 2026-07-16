@@ -1,3 +1,5 @@
+"""Regression tests for inventory widget key isolation."""
+
 from src.fridgechef.ui_keys import inventory_action_key
 
 
