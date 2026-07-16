@@ -21,10 +21,14 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 
 COPY . /app
 
-# Keep the existing NAS persistence adjustments and apply the deterministic UI
-# patch before the container image is finalized.
+# Keep the NAS persistence adjustments and apply every deterministic application
+# patch before the container image is finalized. Each patch is idempotent.
 RUN python /app/_nas_runtime_patch.py \
     && python /app/scripts/apply_mobile_camera_fix.py \
+    && python -m scripts.patch_multi_input_state \
+    && python -m scripts.patch_additive_quantity_ui \
+    && python -m scripts.patch_multi_input_analysis \
+    && python -m scripts.patch_multi_input_tabs \
     && rm -f /app/_nas_runtime_patch.py \
     && mkdir -p /app/data /app/photos /app/backups /app/logs /app/secrets
 
