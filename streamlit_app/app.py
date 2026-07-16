@@ -16,6 +16,7 @@ sys.path.append(str(PROJECT_ROOT))
 from src.fridgechef.blink_camera import capture_blink_photo_sync
 from src.fridgechef.config import get_settings
 from src.fridgechef.device_camera import rear_camera_input
+from src.fridgechef.mobile_upload import mobile_image_upload
 from src.fridgechef.fridge_qa import answer_fridge_question
 from src.fridgechef.input_pipeline import (
     PreparedImageInput,
@@ -1851,19 +1852,76 @@ with tabs[0]:
         )
 
 with tabs[1]:
-    upload_key = current_upload_widget_key()
-    uploaded = st.file_uploader(
-        "Sube una foto de alimentos (JPG, PNG o WEBP)",
-        type=["jpg", "jpeg", "png", "webp"],
-        key=upload_key,
-        max_upload_size=settings.max_image_mb,
-        on_change=prepare_uploaded_image_from_widget,
-        args=(upload_key,),
-    )
-    if uploaded is not None:
-        # The callback is the primary path. This fallback also covers browser or
-        # Streamlit versions that restore the widget value without firing it.
-        prepare_uploaded_image(uploaded)
+    if can_offer_device_camera():
+        mobile_upload_key = (
+            f"mobile_fridge_upload_{st.session_state.get('upload_widget_version', 0)}"
+        )
+        try:
+            mobile_uploaded = mobile_image_upload(
+                key=mobile_upload_key,
+                max_source_mb=max(settings.max_image_mb, 25),
+                max_output_mb=max(1, min(settings.max_image_mb, 3)),
+                max_dimension=1920,
+                select_label=t("Seleccionar foto"),
+                processing_label=t("Preparando la foto…"),
+                ready_label=t("Foto preparada. Ya puedes analizarla."),
+                unsupported_label=t("Este formato no es compatible. Usa JPG, PNG o WEBP."),
+                too_large_label=t("La foto es demasiado grande para prepararla."),
+                failed_label=t("No he podido preparar esta foto. Prueba con otra imagen."),
+            )
+        except Exception:
+            mobile_uploaded = None
+            st.session_state["upload_error"] = (
+                "No he podido abrir el selector de fotos. Recarga la página y vuelve a intentarlo."
+            )
+
+        if mobile_uploaded is not None:
+            if mobile_uploaded.error:
+                clear_prepared_image("upload", reset_widget=False)
+                st.session_state["upload_error"] = mobile_uploaded.error
+            elif mobile_uploaded.ok:
+                try:
+                    validate_image_upload(
+                        mobile_uploaded.image_bytes or b"",
+                        mobile_uploaded.mime_type,
+                        settings.max_image_mb,
+                    )
+                    current_upload = get_prepared_image("upload")
+                    if current_upload is None or current_upload.input_id != mobile_uploaded.upload_id:
+                        store_prepared_image(
+                            mobile_uploaded.image_bytes or b"",
+                            mobile_uploaded.mime_type,
+                            "Foto subida",
+                            "upload",
+                            input_id=mobile_uploaded.upload_id,
+                            filename=mobile_uploaded.filename,
+                        )
+                    st.session_state["upload_error"] = ""
+                    st.session_state["upload_notice"] = (
+                        f"Foto preparada correctamente: {mobile_uploaded.filename}."
+                    )
+                except ImageValidationError as exc:
+                    clear_prepared_image("upload", reset_widget=False)
+                    st.session_state["upload_error"] = str(exc)
+                except Exception:
+                    clear_prepared_image("upload", reset_widget=False)
+                    st.session_state["upload_error"] = (
+                        "No he podido preparar esta foto. Prueba con otra imagen JPG, PNG o WEBP."
+                    )
+    else:
+        upload_key = current_upload_widget_key()
+        uploaded = st.file_uploader(
+            "Sube una foto de alimentos (JPG, PNG o WEBP)",
+            type=["jpg", "jpeg", "png", "webp"],
+            key=upload_key,
+            max_upload_size=settings.max_image_mb,
+            on_change=prepare_uploaded_image_from_widget,
+            args=(upload_key,),
+        )
+        if uploaded is not None:
+            # The callback is the primary path. This fallback also covers browser or
+            # Streamlit versions that restore the widget value without firing it.
+            prepare_uploaded_image(uploaded)
 
     if st.session_state.get("upload_error"):
         st.error(st.session_state["upload_error"], __skip_i18n=True)

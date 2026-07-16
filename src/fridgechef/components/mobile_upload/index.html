@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>FridgeChef mobile upload</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script defer src="./streamlit-component-lib.js"></script>
+    <script defer src="./main.js"></script>
+  </head>
+  <body>
+    <section class="upload-shell" aria-label="Subir foto desde el dispositivo">
+      <input
+        id="gallery-input"
+        class="native-input"
+        type="file"
+        accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+      />
+      <button id="select-button" class="select-button" type="button">
+        Seleccionar foto
+      </button>
+      <div id="upload-status" class="upload-status" role="status" aria-live="polite"></div>
+      <img id="local-preview" class="local-preview" alt="Vista previa de la foto seleccionada" hidden />
+    </section>
+  </body>
+</html>

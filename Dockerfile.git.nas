@@ -34,6 +34,7 @@ RUN python /app/_nas_runtime_patch.py \
     && python -m scripts.patch_multi_input_messages \
     && python -m scripts.patch_recipe_results_only \
     && python -m scripts.patch_upload_and_camera_reliability \
+    && python -m scripts.patch_mobile_gallery_upload \
     && rm -f /app/_nas_runtime_patch.py \
     && mkdir -p /app/data /app/photos /app/backups /app/logs /app/secrets
 
