@@ -496,8 +496,10 @@ def _try_generate_image(prompt: str, settings) -> tuple[bytes, str, str]:
         except Exception as exc:
             summary = " ".join(str(exc).split())[:280]
             errors.append(f"{model_name}: {type(exc).__name__}: {summary}")
-            _LOGGER.warning(
-                "Recipe image cloud attempt failed for %s: %s: %s",
+            # Individual provider failures are expected while another image
+            # model can still complete the request, so keep them as diagnostics.
+            _LOGGER.info(
+                "Recipe image candidate unavailable for %s: %s: %s",
                 model_name,
                 type(exc).__name__,
                 summary,
@@ -534,8 +536,10 @@ def generate_recipe_image(recipe: RecipeItem, profile: UserProfile, use_cache: b
     except Exception as exc:
         # A local card keeps the one-image-per-recipe contract during cloud outages.
         summary = " ".join(str(exc).split())[:280]
-        _LOGGER.warning(
-            "Cloud recipe image unavailable for '%s'; using local fallback: %s",
+        # The local card fulfils the requested image contract, so this is a
+        # successful recovery path rather than an operational warning.
+        _LOGGER.info(
+            "Cloud recipe image unavailable for '%s'; local fallback selected: %s",
             recipe.title,
             summary,
         )

@@ -206,7 +206,9 @@ def analyze_image_bytes(image_bytes: bytes, mime_type: str) -> FridgeAnalysis:
             except Exception as exc:
                 summary = _error_summary(exc)
                 errors.append(f"{model_name}@{location}: {summary}")
-                _LOGGER.warning("Vision attempt failed for %s@%s: %s", model_name, location, summary)
+                # A failed candidate is expected while the fallback chain is still running.
+                # Keep it at INFO so production logs reserve warnings for user-visible failures.
+                _LOGGER.info("Vision candidate unavailable for %s@%s: %s", model_name, location, summary)
 
     raise RuntimeError(
         "No configured vision model completed the image analysis. "

@@ -1601,9 +1601,12 @@ def show_recipes(response: RecipeResponse, profile: UserProfile, show_images: bo
             for line in info_lines:
                 st.markdown(f"- {line}")
 
-            st.markdown("### Ingredientes")
-            for ingredient in recipe.ingredients_used:
-                st.markdown(f"- {sentence_case(ingredient)}")
+            # Keep long ingredient lists compact on phones, tablets and desktops.
+            # The native Streamlit expander preserves accessibility and responsive width
+            # without introducing custom JavaScript or changing the recipe card layout.
+            with st.expander("🥕 Ingredientes", expanded=False):
+                for ingredient in recipe.ingredients_used:
+                    st.markdown(f"- {sentence_case(ingredient)}")
 
             if recipe.shopping_list:
                 with st.expander("Opcional para completar la receta", expanded=False):
