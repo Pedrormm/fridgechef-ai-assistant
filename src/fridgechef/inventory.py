@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from src.fridgechef.availability import normalize_text, unique_clean
+from src.fridgechef.food_name_normalizer import strip_commercial_terms
 from src.fridgechef.name_matching import inventory_name_key
 from src.fridgechef.models import (
     BarcodeObservation,
@@ -55,8 +56,8 @@ def _expiry_for_name(name: str, observations: list[BarcodeObservation]) -> str |
 
 
 def item_to_recipe_name(item: InventoryItem) -> str:
-    """Return the clean ingredient name used by the recipe generator."""
-    return item.name
+    """Return a defensive brand-free ingredient name for recipe generation."""
+    return strip_commercial_terms(item.name)
 
 
 def inventory_to_recipe_ingredients(inventory: Iterable[InventoryItem]) -> list[str]:
