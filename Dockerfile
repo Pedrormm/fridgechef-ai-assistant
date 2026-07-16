@@ -12,23 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# The repository contains the already-materialized and CI-validated application.
+# Docker builds must remain immutable and must not rewrite tracked source files.
 COPY . ./
-
-# Apply deterministic, idempotent patches during image creation so every
-# runtime receives the same verified camera, widget-key and inventory behavior.
-RUN python scripts/apply_mobile_camera_fix.py \
-    && python -m scripts.patch_inventory_name_matching \
-    && python -m scripts.patch_multi_input_state \
-    && python -m scripts.patch_additive_quantity_ui \
-    && python -m scripts.patch_multi_input_analysis \
-    && python -m scripts.patch_multi_input_tabs \
-    && python -m scripts.patch_replace_semantics \
-    && python -m scripts.patch_multi_input_messages \
-    && python -m scripts.patch_recipe_results_only \
-    && python -m scripts.patch_upload_and_camera_reliability \
-    && python -m scripts.patch_mobile_gallery_upload \
-    && python -m scripts.patch_theme_persistence \
-    && python -m scripts.patch_production_resilience
 
 EXPOSE 8080
 
