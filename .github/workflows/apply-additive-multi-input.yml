@@ -22,6 +22,9 @@ on:
       - 'tests/test_inventory.py'
       - 'tests/test_name_matching.py'
       - 'tests/test_quantities.py'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -32,7 +35,7 @@ jobs:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out feature branch
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -60,6 +63,7 @@ jobs:
         run: python -m compileall -q src streamlit_app tests scripts
 
       - name: Commit verified generated changes
+        if: github.event_name == 'push'
         run: |
           if git diff --quiet; then
             echo "No generated changes to commit."
