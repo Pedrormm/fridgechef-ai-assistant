@@ -1,109 +1,41 @@
-name: Apply additive multi-input inventory
+name: FridgeChef CI
 
 on:
   push:
     branches:
-      - feature/additive-multi-input-inventory
-      - fix/multi-input-message-polish
-      - fix/recipe-results-only
-      - fix/upload-and-live-rear-camera
-      - fix/mobile-gallery-upload
-      - feature/persistent-visual-theme
-    paths:
-      - '.github/workflows/apply-additive-multi-input.yml'
-      - 'Dockerfile'
-      - 'Dockerfile.git.nas'
-      - 'scripts/patch_utils.py'
-      - 'scripts/patch_multi_input_state.py'
-      - 'scripts/patch_additive_quantity_ui.py'
-      - 'scripts/patch_multi_input_analysis.py'
-      - 'scripts/patch_multi_input_tabs.py'
-      - 'scripts/patch_inventory_name_matching.py'
-      - 'scripts/patch_replace_semantics.py'
-      - 'scripts/patch_multi_input_messages.py'
-      - 'scripts/patch_recipe_results_only.py'
-      - 'scripts/patch_upload_and_camera_reliability.py'
-      - 'scripts/patch_mobile_gallery_upload.py'
-      - 'scripts/patch_theme_persistence.py'
-      - 'src/fridgechef/app_preferences.py'
-      - 'src/fridgechef/components/rear_camera/main.js'
-      - 'src/fridgechef/components/mobile_upload/**'
-      - 'src/fridgechef/input_pipeline.py'
-      - 'src/fridgechef/inventory.py'
-      - 'src/fridgechef/mobile_upload.py'
-      - 'src/fridgechef/models.py'
-      - 'src/fridgechef/name_matching.py'
-      - 'src/fridgechef/quantities.py'
-      - 'src/fridgechef/theme.py'
-      - 'src/fridgechef/upload_input.py'
-      - 'tests/test_app_multi_input_contract.py'
-      - 'tests/test_app_preferences.py'
-      - 'tests/test_input_pipeline_combinations.py'
-      - 'tests/test_inventory.py'
-      - 'tests/test_mobile_upload.py'
-      - 'tests/test_mobile_upload_frontend.py'
-      - 'tests/test_name_matching.py'
-      - 'tests/test_quantities.py'
-      - 'tests/test_rear_camera_frontend.py'
-      - 'tests/test_theme_persistence_contract.py'
-      - 'tests/test_upload_input.py'
+      - main
   pull_request:
     branches:
       - main
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: fridgechef-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  apply-and-test:
-    if: github.actor != 'github-actions[bot]'
+  application-tests:
+    name: Application tests and static validation
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: pip
 
-      - name: Apply canonical inventory matching
-        run: python -m scripts.patch_inventory_name_matching
-
-      - name: Apply prepared input state
-        run: python -m scripts.patch_multi_input_state
-
-      - name: Apply additive quantity UI
-        run: python -m scripts.patch_additive_quantity_ui
-
-      - name: Apply multi-input analysis
-        run: python -m scripts.patch_multi_input_analysis
-
-      - name: Apply simultaneous input tabs
-        run: python -m scripts.patch_multi_input_tabs
-
-      - name: Apply replace semantics
-        run: python -m scripts.patch_replace_semantics
-
-      - name: Apply friendly result messages
-        run: python -m scripts.patch_multi_input_messages
-
-      - name: Apply recipe-only result rendering
-        run: python -m scripts.patch_recipe_results_only
-
-      - name: Apply upload and camera reliability
-        run: python -m scripts.patch_upload_and_camera_reliability
-
-      - name: Apply mobile gallery upload
-        run: python -m scripts.patch_mobile_gallery_upload
-
-      - name: Apply persistent visual theme
-        run: python -m scripts.patch_theme_persistence
-
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install --requirement requirements.txt
 
       - name: Run complete test suite
         run: python -m pytest -q
@@ -117,15 +49,28 @@ jobs:
       - name: Validate mobile upload JavaScript
         run: node --check src/fridgechef/components/mobile_upload/main.js
 
-      - name: Commit verified generated changes
-        if: github.event_name == 'push'
-        run: |
-          if git diff --quiet; then
-            echo "No generated changes to commit."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add streamlit_app/app.py src/fridgechef/inventory.py
-          git commit -m "Persist visual theme selection in SQLite"
-          git push
+      - name: Verify validation does not modify tracked files
+        run: git diff --exit-code
+
+  slim-runtime-tests:
+    name: Python 3.11 slim runtime compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: application-tests
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build the production-compatible image
+        run: docker build --pull --file Dockerfile --tag fridgechef-ci:${{ github.sha }} .
+
+      - name: Run the complete suite inside the slim image
+        run: docker run --rm --entrypoint python fridgechef-ci:${{ github.sha }} -m pytest -q
+
+      - name: Compile source inside the slim image
+        run: >-
+          docker run --rm --entrypoint python fridgechef-ci:${{ github.sha }}
+          -m compileall -q src streamlit_app tests scripts
