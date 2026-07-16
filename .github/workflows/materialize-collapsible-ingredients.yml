@@ -1,0 +1,54 @@
+name: Materialize collapsible recipe ingredients
+
+on:
+  push:
+    branches:
+      - feat/collapsible-recipe-ingredients-clean-logs
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Materialize deterministic source changes
+        run: python -m scripts.patch_collapsible_ingredients_and_logs
+
+      - name: Remove one-time migration workflow
+        run: rm .github/workflows/materialize-collapsible-ingredients.yml
+
+      - name: Commit materialized application source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streamlit_app/app.py src/fridgechef/vision.py src/fridgechef/recipe_images.py
+          git add -u .github/workflows/materialize-collapsible-ingredients.yml
+          git commit -m "Materialize collapsed recipe ingredients and clean recovered logs"
+          git push
+
+      - name: Install dependencies
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Validate Python source
+        run: python -m compileall -q src streamlit_app tests scripts
+
+      - name: Validate browser components
+        run: |
+          node --check src/fridgechef/components/rear_camera/main.js
+          node --check src/fridgechef/components/mobile_upload/main.js
