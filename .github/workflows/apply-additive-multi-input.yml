@@ -6,6 +6,8 @@ on:
       - feature/additive-multi-input-inventory
     paths:
       - '.github/workflows/apply-additive-multi-input.yml'
+      - 'Dockerfile'
+      - 'Dockerfile.git.nas'
       - 'scripts/patch_utils.py'
       - 'scripts/patch_multi_input_state.py'
       - 'scripts/patch_additive_quantity_ui.py'
