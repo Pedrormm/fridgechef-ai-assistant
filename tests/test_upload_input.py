@@ -1,3 +1,4 @@
+from src.fridgechef import upload_input
 from src.fridgechef.upload_input import (
     normalize_image_mime_type,
     read_uploaded_image,
@@ -30,6 +31,21 @@ def test_browser_mime_alias_is_normalized():
 def test_extension_recovers_an_empty_or_generic_browser_mime_type():
     assert normalize_image_mime_type("food.webp", "") == "image/webp"
     assert normalize_image_mime_type("food.png", "application/octet-stream") == "image/png"
+
+
+def test_supported_extensions_do_not_depend_on_the_operating_system(monkeypatch):
+    monkeypatch.setattr(upload_input.mimetypes, "guess_type", lambda *_args, **_kwargs: (None, None))
+
+    assert normalize_image_mime_type("FOOD.WEBP", "") == "image/webp"
+    assert normalize_image_mime_type("fridge.JPEG", "application/octet-stream") == "image/jpeg"
+    assert normalize_image_mime_type("shelf.PNG", "binary/octet-stream") == "image/png"
+
+
+def test_unknown_generic_upload_stays_generic(monkeypatch):
+    monkeypatch.setattr(upload_input.mimetypes, "guess_type", lambda *_args, **_kwargs: (None, None))
+
+    assert normalize_image_mime_type("food.unknown", "") == "application/octet-stream"
+    assert normalize_image_mime_type("food.unknown", "application/octet-stream") == "application/octet-stream"
 
 
 def test_streamlit_file_id_is_preferred_for_upload_identity():

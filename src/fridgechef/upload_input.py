@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 from dataclasses import dataclass
+from pathlib import PurePath
 from typing import Any
 
 
@@ -12,6 +13,13 @@ _MIME_ALIASES = {
     "image/pjpeg": "image/jpeg",
     "image/x-png": "image/png",
 }
+_EXTENSION_MIME_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+_GENERIC_BROWSER_MIME_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 
 
 @dataclass(frozen=True)
@@ -24,18 +32,43 @@ class UploadedImageInput:
     upload_id: str
 
 
+def _normalise_declared_mime_type(value: object) -> str:
+    """Return a lowercase canonical browser MIME value."""
+    declared = str(value or "").strip().lower()
+    return _MIME_ALIASES.get(declared, declared)
+
+
+def _mime_type_from_extension(filename: str) -> str:
+    """Resolve supported image extensions without relying on OS MIME tables."""
+    clean_name = str(filename or "").split("?", 1)[0].split("#", 1)[0]
+    suffix = PurePath(clean_name).suffix.lower()
+    return _EXTENSION_MIME_TYPES.get(suffix, "")
+
+
 def normalize_image_mime_type(filename: str, declared_mime_type: object) -> str:
-    """Return a supported MIME type using the browser value and file extension."""
-    declared = str(declared_mime_type or "").strip().lower()
-    declared = _MIME_ALIASES.get(declared, declared)
+    """Return a supported MIME type consistently across browsers and Docker.
+
+    Browser upload controls may send an empty or generic MIME value. Python's
+    ``mimetypes`` database also varies between operating systems, so the supported
+    image extensions are resolved from an application-owned mapping first. The OS
+    database remains only a final compatibility fallback for known image types.
+    """
+    declared = _normalise_declared_mime_type(declared_mime_type)
     if declared in _SUPPORTED_IMAGE_TYPES:
         return declared
 
-    guessed = (mimetypes.guess_type(filename or "")[0] or "").lower()
+    extension_type = _mime_type_from_extension(filename)
+    if extension_type:
+        return extension_type
+
+    guessed = (mimetypes.guess_type(filename or "", strict=False)[0] or "").lower()
     guessed = _MIME_ALIASES.get(guessed, guessed)
     if guessed in _SUPPORTED_IMAGE_TYPES:
         return guessed
-    return declared or guessed or "application/octet-stream"
+
+    if declared not in _GENERIC_BROWSER_MIME_TYPES:
+        return declared
+    return "application/octet-stream"
 
 
 def uploaded_file_identifier(uploaded_file: Any, image_bytes: bytes) -> str:
