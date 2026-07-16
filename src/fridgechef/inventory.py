@@ -4,7 +4,21 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from src.fridgechef.availability import normalize_text, unique_clean
-from src.fridgechef.models import BarcodeObservation, FridgeAnalysis, IngredientMention, InventoryItem, InventoryUpdateResult
+from src.fridgechef.models import (
+    BarcodeObservation,
+    FridgeAnalysis,
+    IngredientMention,
+    InventoryItem,
+    InventoryQuantityChange,
+    InventoryUpdateResult,
+)
+from src.fridgechef.quantities import (
+    display_quantity_label,
+    format_quantity_parts,
+    merge_quantity_parts,
+    normalize_quantity_parts,
+    parse_quantity_label,
+)
 
 
 def _source_label(source: str) -> str:
@@ -53,22 +67,30 @@ def inventory_to_recipe_ingredients(inventory: Iterable[InventoryItem]) -> list[
     )
 
 
-def inventory_from_inputs(
+def _quantity_fields(label: object) -> dict[str, object]:
+    """Create backward-compatible quantity fields from a model or user label."""
+    parts = parse_quantity_label(label)
+    unit_count = parts.get("unit", 1.0)
+    return {
+        "quantity": max(1, int(round(unit_count))),
+        "quantity_parts": parts,
+        "quantity_label": format_quantity_parts(parts, "es"),
+    }
+
+
+def _manual_inventory(
     manual_ingredients: list[str],
-    analysis: FridgeAnalysis | None,
-    source: str = "manual",
-    manual_items: list[IngredientMention] | None = None,
+    manual_items: list[IngredientMention] | None,
 ) -> list[InventoryItem]:
-    """Build normalized inventory items from manual text and optional image analysis."""
+    """Build and sum explicit manual mentions before combining other inputs."""
     items: list[InventoryItem] = []
     now_note = f"Actualizado: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
-
-    manual_mentions = manual_items or [
-        IngredientMention(name=ingredient, quantity_label="Añadido manualmente", confidence=1.0)
+    mentions = manual_items or [
+        IngredientMention(name=ingredient, quantity_label="Cantidad no indicada", confidence=1.0)
         for ingredient in manual_ingredients
     ]
 
-    for mention in manual_mentions:
+    for mention in mentions:
         name = mention.name.strip()
         key = normalize_text(name)
         if not key:
@@ -80,43 +102,68 @@ def inventory_from_inputs(
             InventoryItem(
                 name=name,
                 normalized_name=key,
-                quantity=1,
-                quantity_label=mention.quantity_label or "Cantidad no indicada",
                 state=mention.state or "unknown",
                 confidence=mention.confidence or 1.0,
                 sources=[_source_label("manual")],
                 notes=unique_clean(notes),
+                **_quantity_fields(mention.quantity_label),
             )
         )
 
-    if analysis:
-        source_label = _source_label(source)
-        spoiled_keys = {normalize_text(item.name) for item in analysis.possible_spoiled_items}
-        for ingredient in analysis.visible_ingredients:
-            name = ingredient.name.strip()
-            key = normalize_text(name)
-            if not key:
-                continue
+    return consolidate_inventory(items, quantity_mode="sum")
 
-            state = ingredient.state or "unknown"
-            if key in spoiled_keys:
-                state = "possible_spoiled"
 
-            items.append(
-                InventoryItem(
-                    name=name,
-                    normalized_name=key,
-                    quantity=1,
-                    quantity_label=ingredient.quantity_estimate or "Cantidad no indicada",
-                    state=state,
-                    expiry_text=_expiry_for_name(name, analysis.barcode_observations),
-                    confidence=ingredient.confidence,
-                    sources=[source_label],
-                    notes=[note for note in [ingredient.evidence, now_note] if note],
-                )
+def _image_inventory(analysis: FridgeAnalysis | None, source: str) -> list[InventoryItem]:
+    """Build one image inventory while deduplicating repeated model detections."""
+    if analysis is None:
+        return []
+
+    items: list[InventoryItem] = []
+    now_note = f"Actualizado: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    source_label = _source_label(source)
+    spoiled_keys = {normalize_text(item.name) for item in analysis.possible_spoiled_items}
+
+    for ingredient in analysis.visible_ingredients:
+        name = ingredient.name.strip()
+        key = normalize_text(name)
+        if not key:
+            continue
+
+        state = ingredient.state or "unknown"
+        if key in spoiled_keys:
+            state = "possible_spoiled"
+
+        items.append(
+            InventoryItem(
+                name=name,
+                normalized_name=key,
+                state=state,
+                expiry_text=_expiry_for_name(name, analysis.barcode_observations),
+                confidence=ingredient.confidence,
+                sources=[source_label],
+                notes=[note for note in [ingredient.evidence, now_note] if note],
+                **_quantity_fields(ingredient.quantity_estimate or "Cantidad no indicada"),
             )
+        )
 
-    return consolidate_inventory(items)
+    return consolidate_inventory(items, quantity_mode="max")
+
+
+def inventory_from_inputs(
+    manual_ingredients: list[str],
+    analysis: FridgeAnalysis | None,
+    source: str = "manual",
+    manual_items: list[IngredientMention] | None = None,
+) -> list[InventoryItem]:
+    """Build inventory from one manual input and one optional image source."""
+    groups: list[list[InventoryItem]] = []
+    manual_group = _manual_inventory(manual_ingredients, manual_items)
+    if manual_group:
+        groups.append(manual_group)
+    image_group = _image_inventory(analysis, source)
+    if image_group:
+        groups.append(image_group)
+    return combine_input_inventories(groups)
 
 
 def _choose_better_name(existing: InventoryItem, incoming: InventoryItem) -> str:
@@ -126,18 +173,28 @@ def _choose_better_name(existing: InventoryItem, incoming: InventoryItem) -> str
     return existing.name
 
 
-def _merge_item(existing: InventoryItem, incoming: InventoryItem) -> InventoryItem:
-    """Merge repeated detections without counting the same food multiple times."""
+def _merged_state(existing: InventoryItem, incoming: InventoryItem) -> str:
+    """Preserve the most cautious freshness state across matching observations."""
     better_state = incoming.state if existing.state in {"unknown", "fresh"} else existing.state
     if incoming.state in {"aging", "possible_spoiled", "spoiled"}:
         better_state = incoming.state
+    return better_state
+
+
+def _merge_item(existing: InventoryItem, incoming: InventoryItem, *, quantity_mode: str) -> InventoryItem:
+    """Merge item metadata while using an explicit quantity policy."""
+    existing_parts = normalize_quantity_parts(existing.quantity_parts, existing.quantity_label)
+    incoming_parts = normalize_quantity_parts(incoming.quantity_parts, incoming.quantity_label)
+    parts = merge_quantity_parts(existing_parts, incoming_parts, mode=quantity_mode)
+    unit_count = parts.get("unit", max(existing.quantity, incoming.quantity, 1))
 
     return InventoryItem(
         name=_choose_better_name(existing, incoming),
         normalized_name=existing.normalized_name,
-        quantity=max(existing.quantity, incoming.quantity),
-        quantity_label=incoming.quantity_label if incoming.quantity_label != "Cantidad no indicada" else existing.quantity_label,
-        state=better_state,
+        quantity=max(1, int(round(unit_count))),
+        quantity_label=format_quantity_parts(parts, "es"),
+        quantity_parts=parts,
+        state=_merged_state(existing, incoming),
         expiry_text=incoming.expiry_text or existing.expiry_text,
         confidence=max(existing.confidence, incoming.confidence),
         sources=_merge_sources(existing.sources, incoming.sources),
@@ -145,18 +202,53 @@ def _merge_item(existing: InventoryItem, incoming: InventoryItem) -> InventoryIt
     )
 
 
-def consolidate_inventory(items: Iterable[InventoryItem]) -> list[InventoryItem]:
-    """Deduplicate inventory items by normalized name while preserving useful metadata."""
+def consolidate_inventory(
+    items: Iterable[InventoryItem],
+    *,
+    quantity_mode: str = "max",
+) -> list[InventoryItem]:
+    """Deduplicate one source while preserving or summing quantities as requested."""
     consolidated: dict[str, InventoryItem] = {}
-    for item in items:
-        key = item.normalized_name or normalize_text(item.name)
+    for raw_item in items:
+        key = raw_item.normalized_name or normalize_text(raw_item.name)
         if not key:
             continue
+
+        parts = normalize_quantity_parts(raw_item.quantity_parts, raw_item.quantity_label)
+        item = raw_item.model_copy(
+            update={
+                "normalized_name": key,
+                "quantity_parts": parts,
+                "quantity_label": format_quantity_parts(parts, "es"),
+                "quantity": max(1, int(round(parts.get("unit", raw_item.quantity or 1)))),
+            }
+        )
         if key in consolidated:
-            consolidated[key] = _merge_item(consolidated[key], item)
+            consolidated[key] = _merge_item(
+                consolidated[key],
+                item,
+                quantity_mode=quantity_mode,
+            )
         else:
-            consolidated[key] = item.model_copy(update={"normalized_name": key})
+            consolidated[key] = item
+
     return sorted(consolidated.values(), key=lambda value: value.name.lower())
+
+
+def combine_input_inventories(
+    inventories: Iterable[Iterable[InventoryItem]],
+) -> list[InventoryItem]:
+    """Sum the same food across distinct manual, upload, device and internal inputs."""
+    combined: dict[str, InventoryItem] = {}
+    for inventory in inventories:
+        for item in consolidate_inventory(inventory, quantity_mode="max"):
+            key = item.normalized_name or normalize_text(item.name)
+            if key in combined:
+                combined[key] = _merge_item(combined[key], item, quantity_mode="sum")
+            else:
+                combined[key] = item
+
+    return sorted(combined.values(), key=lambda value: value.name.lower())
 
 
 def apply_inventory_update(
@@ -164,40 +256,80 @@ def apply_inventory_update(
     incoming_items: list[InventoryItem],
     mode: str,
 ) -> InventoryUpdateResult:
-    """Apply either a full replacement or a safe additive update to the inventory."""
+    """Apply replacement or additive semantics without clearing on an empty analysis."""
     mode = "add" if mode == "add" else "replace"
-    existing_by_key = {item.normalized_name: item for item in existing_inventory}
-    incoming_by_key = {item.normalized_name: item for item in consolidate_inventory(incoming_items)}
+    existing = consolidate_inventory(existing_inventory, quantity_mode="max")
+    incoming = consolidate_inventory(incoming_items, quantity_mode="max")
+    existing_by_key = {item.normalized_name: item for item in existing}
+    incoming_by_key = {item.normalized_name: item for item in incoming}
+
+    # An empty result is never a command to erase the saved fridge. This guard is
+    # deliberately kept at the domain layer as well as the UI layer.
+    if not incoming_by_key:
+        return InventoryUpdateResult(inventory=existing, mode=mode)
 
     if mode == "replace":
-        inventory = list(incoming_by_key.values())
         removed = [item.name for key, item in existing_by_key.items() if key not in incoming_by_key]
         added = [item.name for key, item in incoming_by_key.items() if key not in existing_by_key]
         updated = [item.name for key, item in incoming_by_key.items() if key in existing_by_key]
-        return InventoryUpdateResult(inventory=inventory, added=added, updated=updated, removed=removed, mode=mode)
+        return InventoryUpdateResult(
+            inventory=list(incoming_by_key.values()),
+            added=added,
+            updated=updated,
+            removed=removed,
+            mode=mode,
+        )
 
     merged = dict(existing_by_key)
     added: list[str] = []
     updated: list[str] = []
+    quantity_changes: list[InventoryQuantityChange] = []
 
-    for key, incoming in incoming_by_key.items():
+    for key, incoming_item in incoming_by_key.items():
         if key in merged:
-            merged[key] = _merge_item(merged[key], incoming)
-            updated.append(merged[key].name)
+            existing_item = merged[key]
+            merged_item = _merge_item(existing_item, incoming_item, quantity_mode="sum")
+            merged[key] = merged_item
+            updated.append(merged_item.name)
+            quantity_changes.append(
+                InventoryQuantityChange(
+                    name=merged_item.name,
+                    previous_quantity_label=display_quantity_label(
+                        existing_item.quantity_parts,
+                        existing_item.quantity_label,
+                        "es",
+                    ),
+                    incoming_quantity_label=display_quantity_label(
+                        incoming_item.quantity_parts,
+                        incoming_item.quantity_label,
+                        "es",
+                    ),
+                    resulting_quantity_label=display_quantity_label(
+                        merged_item.quantity_parts,
+                        merged_item.quantity_label,
+                        "es",
+                    ),
+                )
+            )
         else:
-            merged[key] = incoming
-            added.append(incoming.name)
+            merged[key] = incoming_item
+            added.append(incoming_item.name)
 
     return InventoryUpdateResult(
-        inventory=consolidate_inventory(merged.values()),
+        inventory=consolidate_inventory(merged.values(), quantity_mode="max"),
         added=added,
         updated=updated,
         removed=[],
+        quantity_changes=quantity_changes,
         mode=mode,
     )
 
 
-def needs_replace_confirmation(existing_inventory: list[InventoryItem], incoming_items: list[InventoryItem], mode: str) -> bool:
+def needs_replace_confirmation(
+    existing_inventory: list[InventoryItem],
+    incoming_items: list[InventoryItem],
+    mode: str,
+) -> bool:
     """Avoid accidental deletion when the new input is much smaller than the saved inventory."""
     if mode != "replace" or not existing_inventory or not incoming_items:
         return False
