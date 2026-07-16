@@ -27,7 +27,8 @@ RUN python scripts/apply_mobile_camera_fix.py \
     && python -m scripts.patch_recipe_results_only \
     && python -m scripts.patch_upload_and_camera_reliability \
     && python -m scripts.patch_mobile_gallery_upload \
-    && python -m scripts.patch_theme_persistence
+    && python -m scripts.patch_theme_persistence \
+    && python -m scripts.patch_production_resilience
 
 EXPOSE 8080
 
