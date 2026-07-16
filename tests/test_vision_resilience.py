@@ -56,8 +56,11 @@ def test_cache_failure_does_not_hide_a_successful_analysis(monkeypatch, tmp_path
 
     monkeypatch.setattr(vision, "get_settings", lambda: settings)
     monkeypatch.setattr(vision, "validate_image_upload", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(vision, "_load_cached_analysis", lambda *_args: None)
-    monkeypatch.setattr(vision, "_save_cached_analysis", lambda *_args: (_ for _ in ()).throw(OSError("read only")))
+    monkeypatch.setattr(
+        vision,
+        "_open_cache",
+        lambda *_args: (_ for _ in ()).throw(OSError("read only")),
+    )
     monkeypatch.setattr(vision, "_generate_analysis", lambda *_args: expected)
 
     assert vision.analyze_image_bytes(b"photo", "image/png") == expected
