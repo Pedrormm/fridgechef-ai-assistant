@@ -73,20 +73,11 @@ jobs:
           node --check src/fridgechef/components/rear_camera/main.js 2>&1 | tee -a /tmp/saved-inventory-validation.log
           node --check src/fridgechef/components/mobile_upload/main.js 2>&1 | tee -a /tmp/saved-inventory-validation.log
 
-      - name: Publish validation diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: saved-inventory-validation-log
-          path: /tmp/saved-inventory-validation.log
-          if-no-files-found: warn
-          retention-days: 1
-
-      - name: Commit validated source and remove this workflow
+      - name: Create validated commit object
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee -a /tmp/saved-inventory-validation.log
           from __future__ import annotations
 
           import base64
@@ -161,10 +152,20 @@ jobs:
                   "parents": [parent_sha],
               },
           )
-          request(
-              "PATCH",
-              "/git/refs/heads/main",
-              {"sha": commit["sha"], "force": False},
+          Path("/tmp/validated-commit-sha.txt").write_text(
+              commit["sha"] + "\n",
+              encoding="utf-8",
           )
-          print(f"Validated commit: {commit['sha']}")
+          print(f"Validated commit object: {commit['sha']}")
           PY
+
+      - name: Publish validated commit and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: saved-inventory-validated-commit
+          path: |
+            /tmp/saved-inventory-validation.log
+            /tmp/validated-commit-sha.txt
+          if-no-files-found: warn
+          retention-days: 1
