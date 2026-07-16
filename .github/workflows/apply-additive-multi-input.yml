@@ -8,6 +8,7 @@ on:
       - fix/recipe-results-only
       - fix/upload-and-live-rear-camera
       - fix/mobile-gallery-upload
+      - feature/persistent-visual-theme
     paths:
       - '.github/workflows/apply-additive-multi-input.yml'
       - 'Dockerfile'
@@ -23,6 +24,8 @@ on:
       - 'scripts/patch_recipe_results_only.py'
       - 'scripts/patch_upload_and_camera_reliability.py'
       - 'scripts/patch_mobile_gallery_upload.py'
+      - 'scripts/patch_theme_persistence.py'
+      - 'src/fridgechef/app_preferences.py'
       - 'src/fridgechef/components/rear_camera/main.js'
       - 'src/fridgechef/components/mobile_upload/**'
       - 'src/fridgechef/input_pipeline.py'
@@ -31,8 +34,10 @@ on:
       - 'src/fridgechef/models.py'
       - 'src/fridgechef/name_matching.py'
       - 'src/fridgechef/quantities.py'
+      - 'src/fridgechef/theme.py'
       - 'src/fridgechef/upload_input.py'
       - 'tests/test_app_multi_input_contract.py'
+      - 'tests/test_app_preferences.py'
       - 'tests/test_input_pipeline_combinations.py'
       - 'tests/test_inventory.py'
       - 'tests/test_mobile_upload.py'
@@ -40,6 +45,7 @@ on:
       - 'tests/test_name_matching.py'
       - 'tests/test_quantities.py'
       - 'tests/test_rear_camera_frontend.py'
+      - 'tests/test_theme_persistence_contract.py'
       - 'tests/test_upload_input.py'
   pull_request:
     branches:
@@ -93,6 +99,9 @@ jobs:
       - name: Apply mobile gallery upload
         run: python -m scripts.patch_mobile_gallery_upload
 
+      - name: Apply persistent visual theme
+        run: python -m scripts.patch_theme_persistence
+
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
@@ -118,5 +127,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add streamlit_app/app.py src/fridgechef/inventory.py
-          git commit -m "Use browser-side mobile gallery uploads"
+          git commit -m "Persist visual theme selection in SQLite"
           git push
