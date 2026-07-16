@@ -22,9 +22,10 @@ def apply_patch() -> None:
         "from src.fridgechef.name_matching import inventory_name_key\n",
         "inventory name matching import",
     )
-    if text.count("key = normalize_text(name)") != 2:
-        raise RuntimeError("Expected two input-name key assignments.")
-    text = text.replace("key = normalize_text(name)", "key = inventory_name_key(name)")
+    assignment = "        key = normalize_text(name)\n"
+    if text.count(assignment) != 2:
+        raise RuntimeError("Expected two complete input-name key assignments.")
+    text = text.replace(assignment, "        key = inventory_name_key(name)\n")
     text = replace_once(
         text,
         "spoiled_keys = {normalize_text(item.name) for item in analysis.possible_spoiled_items}",
