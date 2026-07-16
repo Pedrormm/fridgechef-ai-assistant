@@ -105,13 +105,25 @@ class Settings:
     manual_grounding_enabled: bool = _bool("MANUAL_GROUNDING_ENABLED", True)
     manual_grounding_mode: str = _grounding_mode()
     manual_grounding_min_fragments: int = max(2, _int("MANUAL_GROUNDING_MIN_FRAGMENTS", 2))
-    genai_retry_attempts: int = max(1, min(_int("GENAI_RETRY_ATTEMPTS", 4), 8))
+    genai_retry_attempts: int = max(1, min(_int("GENAI_RETRY_ATTEMPTS", 5), 8))
     genai_timeout_ms: int = max(10_000, _int("GENAI_TIMEOUT_MS", 120_000))
     image_location: str = (os.getenv("GOOGLE_CLOUD_IMAGE_LOCATION", "global") or "global").strip()
     recipe_image_provider: str = (os.getenv("RECIPE_IMAGE_PROVIDER", "gemini") or "gemini").strip().lower()
-    image_model_name: str = (os.getenv("VERTEX_IMAGE_MODEL", "gemini-2.5-flash-image") or "gemini-2.5-flash-image").strip()
-    imagen_model_name: str = (os.getenv("VERTEX_IMAGEN_MODEL", "imagen-4.0-generate-001") or "imagen-4.0-generate-001").strip()
-    image_fallback_models: str = (os.getenv("VERTEX_IMAGE_FALLBACK_MODELS", "gemini-2.5-flash-image,imagen-4.0-generate-001,imagen-3.0-generate-002") or "").strip()
+    image_model_name: str = (
+        os.getenv("VERTEX_IMAGE_MODEL", "gemini-3.1-flash-image")
+        or "gemini-3.1-flash-image"
+    ).strip()
+    imagen_model_name: str = (
+        os.getenv("VERTEX_IMAGEN_MODEL", "imagen-4.0-generate-001")
+        or "imagen-4.0-generate-001"
+    ).strip()
+    image_fallback_models: str = (
+        os.getenv(
+            "VERTEX_IMAGE_FALLBACK_MODELS",
+            "gemini-3.1-flash-image,gemini-2.5-flash-image",
+        )
+        or ""
+    ).strip()
     image_aspect_ratio: str = (os.getenv("RECIPE_IMAGE_ASPECT_RATIO", "4:3") or "4:3").strip()
     image_size: str = (os.getenv("RECIPE_IMAGE_SIZE", "1K") or "1K").strip()
     image_output_mime_type: str = (os.getenv("RECIPE_IMAGE_OUTPUT_MIME_TYPE", "image/jpeg") or "image/jpeg").strip()

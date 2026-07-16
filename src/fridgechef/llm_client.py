@@ -28,7 +28,7 @@ def get_client(location: str | None = None):
     The service-account JSON is loaded explicitly so Docker does not depend on
     machine-specific Application Default Credentials. Production defaults to the
     global endpoint through Settings, and transient capacity errors are retried
-    with bounded exponential backoff.
+    with bounded, jittered exponential backoff.
     """
     if genai is None or genai_types is None:
         raise RuntimeError("La librería google-genai no está instalada en este entorno.")

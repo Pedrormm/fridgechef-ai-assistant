@@ -75,12 +75,19 @@ def test_previous_mobile_and_widget_key_fixes_are_preserved():
     assert "inventory_action_key" in source
 
 
-def test_generate_flow_renders_recipes_without_detected_food_feedback():
+def test_generate_flow_refreshes_inventory_then_renders_only_recipes():
     source = _app_source()
-    generate_block = source.split("if recipes_clicked:", 1)[1]
+    generate_section = source.split("if recipes_clicked:", 1)[1]
+    generate_action, replay_section = generate_section.split(
+        "# Replay successful actions after the refresh", 1
+    )
 
-    assert "show_recipes(response, profile" in generate_block
-    assert 'title="Alimentos detectados"' not in generate_block
-    final_result_block = generate_block.split("if result:", 1)[1]
-    assert "show_manual_feedback" not in final_result_block
-    assert "show_inventory_update" not in final_result_block
+    assert "analyze_current_inputs(" in generate_action
+    assert 'st.session_state["show_last_recipes_once"] = True' in generate_action
+    assert "st.rerun()" in generate_action
+    assert 'title="Alimentos detectados"' not in generate_action
+    assert "show_manual_feedback" not in generate_action
+    assert "show_inventory_update" not in generate_action
+
+    assert "show_recipes(" in replay_section
+    assert "RecipeResponse.model_validate(recipe_payload)" in replay_section
