@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "streamlit_app" / "app.py"
 
+# These tests inspect the entry point as source so Streamlit is never executed during collection.
+
 
 def _app_tree() -> ast.Module:
     """Parse the Streamlit entry point without importing or executing the app."""
