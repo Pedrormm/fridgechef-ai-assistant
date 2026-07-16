@@ -1,0 +1,169 @@
+name: Materialize saved inventory expander on main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-test-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Retrieve reviewed patch and tests
+        run: |
+          git fetch --no-tags origin feat/collapsible-saved-inventory-v3
+          git checkout origin/feat/collapsible-saved-inventory-v3 -- scripts/patch_saved_inventory_expander.py
+          git checkout origin/feat/collapsible-saved-inventory-v3 -- tests/test_saved_inventory_expander.py
+
+      - name: Materialize application source
+        run: |
+          python -m scripts.patch_saved_inventory_expander
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/test_workflow_hygiene.py")
+          source = path.read_text(encoding="utf-8")
+          old = '    Path(".github/workflows/materialize-brand-free-food-names.yml"),\n'
+          new = (
+              old
+              + '    Path(".github/workflows/materialize-saved-inventory-expander.yml"),\n'
+              + '    Path(".github/workflows/materialize-saved-inventory-expander-main.yml"),\n'
+          )
+          if new not in source:
+              if source.count(old) != 1:
+                  raise RuntimeError("The workflow hygiene target has changed unexpectedly.")
+              source = source.replace(old, new, 1)
+          path.write_text(source, encoding="utf-8")
+          PY
+          rm .github/workflows/materialize-saved-inventory-expander-main.yml
+
+      - name: Install dependencies
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Validate Python source
+        run: python -m compileall -q src streamlit_app tests scripts
+
+      - name: Validate browser components
+        run: |
+          node --check src/fridgechef/components/rear_camera/main.js
+          node --check src/fridgechef/components/mobile_upload/main.js
+
+      - name: Build production-compatible image
+        run: docker build --pull --file Dockerfile --tag fridgechef-saved-inventory:${{ github.sha }} .
+
+      - name: Run complete suite inside production image
+        run: docker run --rm --entrypoint python fridgechef-saved-inventory:${{ github.sha }} -m pytest -q
+
+      - name: Compile source inside production image
+        run: >-
+          docker run --rm --entrypoint python fridgechef-saved-inventory:${{ github.sha }}
+          -m compileall -q src streamlit_app tests scripts
+
+      - name: Commit validated source and remove this workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          api_root = f"https://api.github.com/repos/{repository}"
+
+          def request(method: str, path: str, payload: dict | None = None) -> dict:
+              data = None if payload is None else json.dumps(payload).encode("utf-8")
+              request_object = urllib.request.Request(
+                  api_root + path,
+                  data=data,
+                  method=method,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(request_object, timeout=60) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          ref = request("GET", "/git/ref/heads/main")
+          parent_sha = ref["object"]["sha"]
+          parent_commit = request("GET", f"/git/commits/{parent_sha}")
+
+          paths = (
+              "streamlit_app/app.py",
+              ".github/workflows/apply-additive-multi-input.yml",
+              "scripts/patch_saved_inventory_expander.py",
+              "tests/test_saved_inventory_expander.py",
+              "tests/test_workflow_hygiene.py",
+          )
+          tree_entries = []
+          for file_path in paths:
+              payload = base64.b64encode(Path(file_path).read_bytes()).decode("ascii")
+              blob = request(
+                  "POST",
+                  "/git/blobs",
+                  {"content": payload, "encoding": "base64"},
+              )
+              tree_entries.append(
+                  {"path": file_path, "mode": "100644", "type": "blob", "sha": blob["sha"]}
+              )
+
+          tree_entries.append(
+              {
+                  "path": ".github/workflows/materialize-saved-inventory-expander-main.yml",
+                  "mode": "100644",
+                  "type": "blob",
+                  "sha": None,
+              }
+          )
+
+          tree = request(
+              "POST",
+              "/git/trees",
+              {"base_tree": parent_commit["tree"]["sha"], "tree": tree_entries},
+          )
+          commit = request(
+              "POST",
+              "/git/commits",
+              {
+                  "message": "Collapse saved inventory by default",
+                  "tree": tree["sha"],
+                  "parents": [parent_sha],
+              },
+          )
+          request(
+              "PATCH",
+              "/git/refs/heads/main",
+              {"sha": commit["sha"], "force": False},
+          )
+          print(f"Validated commit: {commit['sha']}")
+          PY
