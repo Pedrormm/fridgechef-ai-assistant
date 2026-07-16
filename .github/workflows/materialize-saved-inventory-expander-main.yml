@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   materialize-test-and-commit:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -63,13 +62,14 @@ jobs:
           import base64
           import json
           import os
+          import urllib.error
           import urllib.request
           from pathlib import Path
 
           repository = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GH_TOKEN"]
           api_root = f"https://api.github.com/repos/{repository}"
-          target_branch = "feat/collapsible-saved-inventory-v3"
+          target_branch = "validated-saved-inventory-expander"
 
           def request(method: str, path: str, payload: dict | None = None) -> dict:
               data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -122,11 +122,22 @@ jobs:
                   "parents": [parent_sha],
               },
           )
-          request(
-              "PATCH",
-              "/git/refs/heads/feat/collapsible-saved-inventory-v3",
-              {"sha": commit["sha"], "force": True},
-          )
+
+          try:
+              request(
+                  "PATCH",
+                  f"/git/refs/heads/{target_branch}",
+                  {"sha": commit["sha"], "force": True},
+              )
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+              request(
+                  "POST",
+                  "/git/refs",
+                  {"ref": f"refs/heads/{target_branch}", "sha": commit["sha"]},
+              )
+
           Path("/tmp/validated-commit-sha.txt").write_text(
               commit["sha"] + "\n",
               encoding="utf-8",
