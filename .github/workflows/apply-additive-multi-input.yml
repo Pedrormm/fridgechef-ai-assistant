@@ -34,69 +34,8 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Materialize saved inventory runtime fix
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          app_path = Path("streamlit_app/app.py")
-          source = app_path.read_text(encoding="utf-8")
-          old = '        with st.expander(title, expanded=initially_expanded):\n'
-          new = (
-              '        with st.expander(\n'
-              '            title,\n'
-              '            expanded=initially_expanded,\n'
-              '            key=f"{key_scope}_expander",\n'
-              '            width="stretch",\n'
-              '        ):\n'
-          )
-          if new not in source:
-              if source.count(old) != 1:
-                  raise RuntimeError("Expected exactly one saved-inventory expander call.")
-              app_path.write_text(source.replace(old, new, 1), encoding="utf-8")
-
-          runtime_test = Path("tests/test_saved_inventory_streamlit_runtime.py")
-          runtime_test.write_text(
-              '''from __future__ import annotations
-
-from streamlit.testing.v1 import AppTest
-
-
-def test_saved_inventory_expander_has_no_streamlit_runtime_exception() -> None:
-    """Run the responsive saved-inventory structure through Streamlit itself."""
-    app = AppTest.from_string(
-        """
-import streamlit as st
-
-inventory = [
-    {"name": "Patatas", "quantity": "3 unidades", "state": "En buen estado"},
-    {"name": "Tomates", "quantity": "2 unidades", "state": "Revisar pronto"},
-]
-key_scope = "saved_inventory_top_editable"
-with st.expander(
-    "Alimentos guardados",
-    expanded=False,
-    key=f"{key_scope}_expander",
-    width="stretch",
-):
-    columns = st.columns(2)
-    for index, item in enumerate(inventory):
-        with columns[index % 2]:
-            with st.container(border=True):
-                st.markdown(f"#### {item['name']}")
-                st.button("Editar", key=f"edit_{index}")
-                st.button("Eliminar", key=f"delete_{index}")
-                st.write(f"Cantidad: {item['quantity']}")
-                st.write(f"Estado: {item['state']}")
-        """,
-        default_timeout=10,
-    ).run()
-
-    assert not app.exception
-''',
-              encoding="utf-8",
-          )
-          PY
+      - name: Materialize saved inventory runtime source
+        run: python -m scripts.apply_saved_inventory_runtime_fix
 
       - name: Verify deterministic production source
         run: python -m scripts.patch_production_resilience
@@ -122,13 +61,13 @@ with st.expander(
       - name: Validate mobile upload JavaScript
         run: node --check src/fridgechef/components/mobile_upload/main.js
 
-      - name: Validate the pending source patch
+      - name: Validate pending source changes
         run: git diff --check
 
       - name: Commit validated runtime source
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          git add streamlit_app/app.py tests/test_saved_inventory_streamlit_runtime.py
+          git add streamlit_app/app.py
           if git diff --cached --quiet; then
             echo "Saved inventory runtime source is already materialized."
             exit 0
