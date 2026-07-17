@@ -6,6 +6,9 @@ OBSOLETE_WORKFLOWS = (
     Path(".github/workflows/diagnose-pr-tests.yml"),
     Path(".github/workflows/materialize-collapsible-ingredients.yml"),
     Path(".github/workflows/materialize-brand-free-food-names.yml"),
+    Path(".github/workflows/materialize-saved-inventory-expander.yml"),
+    Path(".github/workflows/materialize-saved-inventory-expander-main.yml"),
+    Path(".github/workflows/materialize-saved-inventory-expander-final.yml"),
 )
 
 
