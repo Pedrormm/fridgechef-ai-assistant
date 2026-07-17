@@ -7,7 +7,6 @@ from scripts.patch_utils import replace_once
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "streamlit_app" / "app.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "apply-additive-multi-input.yml"
 
 
 OLD_INVENTORY_RENDERER = '''def show_inventory(
@@ -146,27 +145,16 @@ NEW_TOP_CALL = '''    show_inventory(
     )
 '''
 
-OLD_WORKFLOW_STEP = '''      - name: Verify brand-free food normalization
-        run: python -m scripts.patch_brand_free_food_names
-'''
-
-NEW_WORKFLOW_STEP = '''      - name: Verify brand-free food normalization
-        run: python -m scripts.patch_brand_free_food_names
-
-      - name: Verify collapsed saved inventory section
-        run: python -m scripts.patch_saved_inventory_expander
-'''
-
 
 def _replace(source: str, old: str, new: str, description: str) -> str:
-    """Apply one exact migration and make repeated CI verification idempotent."""
+    """Apply one exact migration and keep repeated validation idempotent."""
     if new in source:
         return source
     return replace_once(source, old, new, description)
 
 
 def apply() -> None:
-    """Materialize the saved-inventory expander and its permanent CI guard."""
+    """Materialize the saved-inventory expander in the Streamlit entry point."""
     app_source = APP.read_text(encoding="utf-8")
     app_source = _replace(
         app_source,
@@ -181,15 +169,6 @@ def apply() -> None:
         "top saved inventory call",
     )
     APP.write_text(app_source, encoding="utf-8")
-
-    workflow_source = WORKFLOW.read_text(encoding="utf-8")
-    workflow_source = _replace(
-        workflow_source,
-        OLD_WORKFLOW_STEP,
-        NEW_WORKFLOW_STEP,
-        "saved inventory CI verification step",
-    )
-    WORKFLOW.write_text(workflow_source, encoding="utf-8")
 
 
 if __name__ == "__main__":
