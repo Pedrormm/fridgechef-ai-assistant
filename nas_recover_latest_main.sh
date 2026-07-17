@@ -87,7 +87,10 @@ sync_repository() {
 apply_production_compatibility() {
   log "Aplicando compatibilidad determinista de Streamlit al clon de producción"
 
-  python3 - "$REPO_DIR/streamlit_app/app.py" <<'PY'
+  docker run --rm -i \
+    -v "$REPO_DIR:/repo" \
+    python:3.11-slim \
+    python - /repo/streamlit_app/app.py <<'PY'
 from pathlib import Path
 import re
 import sys
