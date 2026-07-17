@@ -1,0 +1,58 @@
+name: Materialize saved inventory expander final
+
+on:
+  push:
+    branches:
+      - feat/collapsible-saved-inventory-v3
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-test-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v7
+        with:
+          ref: feat/collapsible-saved-inventory-v3
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Materialize application source
+        run: python -m scripts.patch_saved_inventory_expander
+
+      - name: Install dependencies
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Validate Python source
+        run: python -m compileall -q src streamlit_app tests scripts
+
+      - name: Validate browser components
+        run: |
+          node --check src/fridgechef/components/rear_camera/main.js
+          node --check src/fridgechef/components/mobile_upload/main.js
+
+      - name: Commit validated application source
+        run: |
+          if git diff --quiet -- streamlit_app/app.py; then
+            echo "The application source is already materialized."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streamlit_app/app.py
+          git commit -m "Collapse saved inventory by default"
+          git push origin "HEAD:feat/collapsible-saved-inventory-v3"
