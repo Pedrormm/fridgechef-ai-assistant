@@ -19,13 +19,13 @@ COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install -r /app/requirements.txt
 
-# Application source is materialized and validated before the image is built.
-# Only the NAS deployment helper may adapt runtime paths and mounted storage.
+# Copy the repository exactly as GitHub validated it. The production image must
+# not depend on temporary generated files from the NAS or from previous builds.
 COPY . /app
 
-RUN python /app/_nas_runtime_patch.py \
-    && rm -f /app/_nas_runtime_patch.py \
-    && mkdir -p /app/data /app/photos /app/backups /app/logs /app/secrets
+# Runtime data is provided by NAS bind mounts. Creating the directories here
+# keeps Streamlit and the persistence layer safe during health checks and tests.
+RUN mkdir -p /app/data /app/photos /app/backups /app/logs /app/secrets
 
 EXPOSE 8080
 
