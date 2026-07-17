@@ -10,6 +10,7 @@ HOST_PORT="${FRIDGECHEF_HOST_PORT:-8501}"
 CONTAINER_PORT="${FRIDGECHEF_CONTAINER_PORT:-8080}"
 
 REPO_DIR="$BASE_DIR/repo"
+BUILD_DIR="$BASE_DIR/build-src"
 DATA_DIR="$BASE_DIR/data"
 PHOTOS_DIR="$BASE_DIR/photos"
 BACKUPS_DIR="$BASE_DIR/backups"
@@ -84,13 +85,27 @@ sync_repository() {
     fail "El clon de GitHub no contiene la carpeta tests."
 }
 
+prepare_build_context() {
+  log "Creando un contexto de compilación limpio sin modificar el clon Git"
+  rm -rf "$BUILD_DIR"
+  mkdir -p "$BUILD_DIR"
+  docker run --rm \
+    -v "$REPO_DIR:/source:ro" \
+    -v "$BUILD_DIR:/build" \
+    alpine:3.20 \
+    sh -c 'cd /source && tar --exclude=.git -cf - . | tar -xf - -C /build'
+
+  [ -f "$BUILD_DIR/src/fridgechef/action_results.py" ] || \
+    fail "El contexto de compilación ha perdido action_results.py."
+}
+
 apply_production_compatibility() {
-  log "Aplicando compatibilidad determinista de Streamlit al clon de producción"
+  log "Aplicando compatibilidad determinista de Streamlit al contexto de producción"
 
   docker run --rm -i \
-    -v "$REPO_DIR:/repo" \
+    -v "$BUILD_DIR:/build" \
     python:3.11-slim \
-    python - /repo/streamlit_app/app.py <<'PY'
+    python - /build/streamlit_app/app.py <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -143,9 +158,9 @@ build_and_validate_candidate() {
     --no-cache \
     --label "org.opencontainers.image.source=$REPO_URL" \
     --label "org.opencontainers.image.revision=$COMMIT_FULL" \
-    -f "$REPO_DIR/Dockerfile.git.nas" \
+    -f "$BUILD_DIR/Dockerfile.git.nas" \
     -t "$IMAGE_TAG" \
-    "$REPO_DIR"
+    "$BUILD_DIR"
 
   log "Comprobando que el módulo ausente está realmente dentro de la imagen"
   docker run --rm -i "$IMAGE_TAG" python - <<'PY'
@@ -245,6 +260,8 @@ PY
     fail "Los logs del nuevo contenedor contienen un error crítico."
   fi
 
+  WORKTREE_STATUS="$(run_git status --porcelain)"
+  [ -z "$WORKTREE_STATUS" ] || fail "El clon Git no está limpio después del despliegue."
   RUNNING_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$CONTAINER_NAME")"
   RUNNING_REVISION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$RUNNING_IMAGE")"
   REMOTE_URL="$(run_git remote get-url origin)"
@@ -268,6 +285,7 @@ PY
 prepare_directories
 backup_sqlite
 sync_repository
+prepare_build_context
 apply_production_compatibility
 build_and_validate_candidate
 start_candidate
