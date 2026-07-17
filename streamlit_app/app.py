@@ -1457,19 +1457,13 @@ def show_delete_inventory_dialog(item_key: str) -> None:
             _content()
 
 
-def show_inventory(
+def _render_inventory_cards(
     inventory: list[InventoryItem],
-    title: str = "Alimentos guardados",
-    editable: bool = False,
-    widget_namespace: str | None = None,
+    *,
+    editable: bool,
+    key_scope: str,
 ) -> None:
-    """Display inventory cards with widget keys scoped to this rendered section."""
-    st.subheader(title)
-    if not inventory:
-        st.info("Todavía no hay alimentos guardados. Escribe ingredientes o sube una foto para empezar.")
-        return
-
-    key_scope = _selector_key(widget_namespace or f"{title}_{'editable' if editable else 'readonly'}")
+    """Render inventory cards inside the section container selected by the caller."""
     columns = st.columns(2)
     for index, item in enumerate(inventory):
         with columns[index % 2]:
@@ -1503,6 +1497,34 @@ def show_inventory(
                 public_notes = [clean_user_text(note) for note in item.notes[:2] if clean_user_text(note)]
                 for note in public_notes:
                     st.caption(note)
+
+
+def show_inventory(
+    inventory: list[InventoryItem],
+    title: str = "Alimentos guardados",
+    editable: bool = False,
+    widget_namespace: str | None = None,
+    collapsible: bool = False,
+    initially_expanded: bool = False,
+) -> None:
+    """Display an inventory section while preserving scoped edit and delete keys."""
+    if not inventory:
+        # Keep the empty-state explanation visible because there are no cards to hide.
+        st.subheader(title)
+        st.info("Todavía no hay alimentos guardados. Escribe ingredientes o sube una foto para empezar.")
+        return
+
+    key_scope = _selector_key(widget_namespace or f"{title}_{'editable' if editable else 'readonly'}")
+    if collapsible:
+        # One outer expander controls the complete saved inventory. The cards stay
+        # in a single container, so desktop and mobile users can open or close the
+        # whole section without nesting additional expanders inside item cards.
+        with st.expander(title, expanded=initially_expanded):
+            _render_inventory_cards(inventory, editable=editable, key_scope=key_scope)
+        return
+
+    st.subheader(title)
+    _render_inventory_cards(inventory, editable=editable, key_scope=key_scope)
 
 
 def show_inventory_update(update_result: InventoryUpdateResult) -> None:
@@ -1856,6 +1878,8 @@ if remember_fridge:
         title="Alimentos guardados",
         editable=True,
         widget_namespace="saved_inventory_top",
+        collapsible=True,
+        initially_expanded=False,
     )
     show_inventory_action_message()
 
